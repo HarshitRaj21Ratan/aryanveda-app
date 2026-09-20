@@ -113,18 +113,18 @@ export const inventoryService = {
     return res.data;
   },
 
-  getLowStock: async (entityId: string): Promise<{ total: number }> => {
-    const res = await apiClient.get<{ success: boolean; total: number }>(`/inventory/${entityId}/low-stock`);
+  getLowStock: async (entityId: string): Promise<{ success: boolean; data: InventoryWithLowStock[]; total: number }> => {
+    const res = await apiClient.get<{ success: boolean; data: InventoryWithLowStock[]; total: number }>(`/inventory/${entityId}/low-stock`);
     return res.data;
   },
 
   adjustStock: async (
     entityId: string,
     skuId: string,
-    payload: { quantityChange: number }
+    payload: { quantityChange?: number; quantity?: number; newQuantity?: number }
   ): Promise<ApiResponse<unknown>> => {
-    const res = await apiClient.post<ApiResponse<unknown>>(
-      `/inventory/${entityId}/adjust/${skuId}`,
+    const res = await apiClient.patch<ApiResponse<unknown>>(
+      `/inventory/${entityId}/${skuId}/adjust`,
       payload
     );
     return res.data;
@@ -135,8 +135,8 @@ export const inventoryService = {
     skuId: string,
     payload: { lowStockThreshold: number }
   ): Promise<ApiResponse<unknown>> => {
-    const res = await apiClient.put<ApiResponse<unknown>>(
-      `/inventory/${entityId}/threshold/${skuId}`,
+    const res = await apiClient.patch<ApiResponse<unknown>>(
+      `/inventory/${entityId}/${skuId}/threshold`,
       payload
     );
     return res.data;

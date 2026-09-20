@@ -56,12 +56,31 @@ export interface CreateMasterSkuPayload {
   unitPrice: number;
   displayRequiredQty: number;
   schemeEligible: boolean;
+  weight?: string;
+  mrpPerUnit?: number;
+  offerRateNew?: number;
+  masterPackQty?: number;
+  masterPackUnit?: string;
+  perPcPrice?: number;
+  schemePercent?: number;
+  schemeAmount?: number;
+  billing?: number;
+  tax18?: number;
+  tax5?: number;
+  superTotal?: number;
+  ssMargin?: number;
+  distributorTotal?: number;
+  distMargin?: number;
+  retailTotal?: number;
   pricePerDozenSS?: number;
   pricePerDozenDist?: number;
   pricePerDozenRetail?: number;
-  masterPackQty?: number;
-  masterPackUnit?: string;
-  mrpPerUnit?: number;
+  superPerBox?: number;
+  distPerBox?: number;
+  retailPerBox?: number;
+  boxQty?: number;
+  boxRate?: number;
+  retailPerPiece?: number;
 }
 
 export interface UpdateMasterSkuPayload {
@@ -138,6 +157,16 @@ export const catalogService = {
 
   adminAddStock: async (masterSkuId: string, quantity: number): Promise<ApiResponse<{ sku: IMasterSku }>> => {
     const res = await apiClient.post<ApiResponse<{ sku: IMasterSku }>>('/catalog/admin/add-stock', { masterSkuId, quantity });
+    return res.data;
+  },
+
+  adminDeleteSku: async (masterSkuId: string): Promise<ApiResponse<unknown>> => {
+    const res = await apiClient.delete<ApiResponse<unknown>>(`/catalog/admin/sku/${masterSkuId}`);
+    return res.data;
+  },
+
+  adminBulkImport: async (rows: any[]): Promise<ApiResponse<{ inserted: number; existing: number; invalid: number }>> => {
+    const res = await apiClient.post<ApiResponse<{ inserted: number; existing: number; invalid: number }>>('/catalog/admin/bulk-import', { rows });
     return res.data;
   },
 

@@ -58,37 +58,126 @@ export function participantLabel(
   return side === 'from' ? 'Supplier' : 'Retailer';
 }
 
-export function canDispatchOrder(order: IOrder, userRole?: string, entityId?: string, soTargetRole?: string): boolean {
-  const isDispatch = userRole === UserRole.DISPATCH;
-  const isManager = userRole === UserRole.RSM || userRole === UserRole.ASM;
-  const isSO = userRole === UserRole.SO || userRole === UserRole.ASE;
-  const isDist = userRole === UserRole.DISTRIBUTOR;
-
-  return (
-    (isDispatch && (order.status === OrderStatus.APPROVED || (order.type === OrderType.PRIMARY && order.fromEntityId === order.toEntityId))) ||
-    ((order.type?.toLowerCase() === OrderType.PRIMARY.toLowerCase() &&
-      order.fromEntityId !== order.toEntityId &&
-      (order.status?.toLowerCase() === OrderStatus.APPROVED.toLowerCase() || order.status?.toLowerCase() === OrderStatus.CREATED.toLowerCase()) &&
-      (order.fromEntityId === entityId || isManager || (isSO && soTargetRole === 'DISTRIBUTOR'))) ||
-      (order.type?.toLowerCase() === OrderType.SECONDARY.toLowerCase() &&
-        order.status?.toLowerCase() === OrderStatus.CREATED.toLowerCase() &&
-        (order.fromEntityId === entityId || isDist || (isSO && soTargetRole === 'DISTRIBUTOR'))))
-  );
+export function isSalesManagerRole(userRole?: UserRole | string | null): boolean {
+  if (!userRole) return false;
+  const roleStr = String(userRole).toLowerCase();
+  return roleStr === 'rsm' || roleStr === 'asm' || roleStr === 'nsm' || userRole === UserRole.RSM || userRole === UserRole.ASM || userRole === UserRole.NSM;
 }
 
-export function canDeliverOrder(order: IOrder, userRole?: string, entityId?: string): boolean {
-  const isSO = userRole === UserRole.SO || userRole === UserRole.ASE;
-  return (
-    order.status === OrderStatus.DISPATCHED &&
-    (order.toEntityId === entityId || (isSO && order.type === OrderType.SECONDARY))
-  );
+export function canDispatchOrder(order: IOrder, userRole?: string, entityId?: string, soTargetRole?: string): boolean {
+  const roleStr = (userRole || '').toLowerCase();
+  const isDispatch = roleStr === 'dispatch' || userRole === UserRole.DISPATCH;
+  const isManager = isSalesManagerRole(userRole);
+  const isSO = roleStr === 'so' || roleStr === 'ase' || userRole === UserRole.SO || userRole === UserRole.ASE;
+  const isDist = roleStr === 'distributor' || userRole === UserRole.DISTRIBUTOR;
+  const isSS = roleStr === 'super_stockist' || userRole === UserRole.SUPER_STOCKIST;
+  const isAdmin = roleStr === 'admin' || userRole === UserRole.ADMIN;
+
+  const typeLower = order.type?.toLowerCase();
+  const statusLower = order.status?.toLowerCase();
+  const primaryLower = OrderType.PRIMARY.toLowerCase();
+  const primaryHandoverLower = OrderType.PRIMARY_HANDOVER.toLowerCase();
+  const secondaryLower = OrderType.SECONDARY.toLowerCase();
+  const createdLower = OrderStatus.CREATED.toLowerCase();
+  const approvedLower = OrderStatus.APPROVED.toLowerCase();
+
+  const isStockIn = (typeLower === primaryLower || typeLower === primaryHandoverLower) && order.fromEntityId === order.toEntityId;
+
+  // Stock-in / Primary Handover orders: only Dispatch team or Admin can dispatch
+  if (isStockIn) {
+    return (isDispatch || isAdmin) && statusLower === approvedLower;
+  }
+
+  // RSM/ASM in Super Stockist context: view and cancel only
+  if (isManager && soTargetRole === 'SUPER_STOCKIST') {
+    return false;
+  }
+
+  // Primary orders
+  if (
+    (typeLower === primaryLower || typeLower === primaryHandoverLower) &&
+    (statusLower === approvedLower || statusLower === createdLower) &&
+    (order.fromEntityId === entityId || isSS || isAdmin || (isSO && soTargetRole === 'DISTRIBUTOR'))
+  ) {
+    return true;
+  }
+
+  // Secondary orders: allowed for SO, ASE, ASM, RSM, Dist, SS when status is CREATED or APPROVED
+  if (
+    typeLower === secondaryLower &&
+    (statusLower === createdLower || statusLower === approvedLower) &&
+    (isSO || isManager || isDist || isSS || isAdmin || order.fromEntityId === entityId)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export function canDeliverOrder(order: IOrder, userRole?: string, entityId?: string, soTargetRole?: string): boolean {
+  const roleStr = (userRole || '').toLowerCase();
+  const isSO = roleStr === 'so' || roleStr === 'ase' || userRole === UserRole.SO || userRole === UserRole.ASE;
+  const isManager = isSalesManagerRole(userRole);
+  const isAdmin = roleStr === 'admin' || userRole === UserRole.ADMIN;
+
+  const typeLower = order.type?.toLowerCase();
+  const statusLower = order.status?.toLowerCase();
+  const dispatchedLower = OrderStatus.DISPATCHED.toLowerCase();
+  const secondaryLower = OrderType.SECONDARY.toLowerCase();
+
+  // Deliver button ONLY appears when status is DISPATCHED
+  if (statusLower !== dispatchedLower) return false;
+
+  // Receiver can confirm delivery
+  if (!!entityId && order.toEntityId === entityId) return true;
+
+  // Admin or Sales Management can confirm delivery on behalf of receiver
+  if (isAdmin || isManager) return true;
+
+  // Sales Officer can confirm delivery for Secondary orders
+  if (isSO && typeLower === secondaryLower) return true;
+
+  return false;
 }
 
 export function canCancelOrder(order: IOrder, userRole?: string, entityId?: string): boolean {
-  const isManager = userRole === UserRole.RSM || userRole === UserRole.ASM;
-  const isSO = userRole === UserRole.SO || userRole === UserRole.ASE;
+  const roleStr = (userRole || '').toLowerCase();
+  const isManager = isSalesManagerRole(userRole);
+  const isSO = roleStr === 'so' || roleStr === 'ase' || userRole === UserRole.SO || userRole === UserRole.ASE;
+  const isAdmin = roleStr === 'admin' || userRole === UserRole.ADMIN;
+  const statusLower = order.status?.toLowerCase();
+  const createdLower = OrderStatus.CREATED.toLowerCase();
+
+  if (statusLower === createdLower) {
+    return (
+      order.createdBy === entityId ||
+      order.fromEntityId === entityId ||
+      order.toEntityId === entityId ||
+      isManager ||
+      isSO ||
+      isAdmin
+    );
+  }
+
+  return false;
+}
+
+export function canApproveOrder(order: IOrder, userRole?: string, entityId?: string): boolean {
+  const roleStr = (userRole || '').toLowerCase();
+  const isSS = roleStr === 'super_stockist' || userRole === UserRole.SUPER_STOCKIST;
+  const isAdmin = roleStr === 'admin' || userRole === UserRole.ADMIN;
+
+  const typeLower = order.type?.toLowerCase();
+  const statusLower = order.status?.toLowerCase();
+  const primaryLower = OrderType.PRIMARY.toLowerCase();
+  const createdLower = OrderStatus.CREATED.toLowerCase();
+
   return (
-    order.status === OrderStatus.CREATED &&
-    (order.createdBy === entityId || isManager || isSO)
+    typeLower === primaryLower &&
+    statusLower === createdLower &&
+    order.fromEntityId !== order.toEntityId &&
+    order.createdBy !== entityId &&
+    (order.fromEntityId === entityId || isSS || isAdmin)
   );
 }
+

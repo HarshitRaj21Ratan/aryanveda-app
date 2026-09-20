@@ -142,6 +142,128 @@ export async function downloadXlsxReport(
 }
 
 /**
+ * Fast direct streaming export for Orders using backend endpoint /orders/export (matching frontend web)
+ */
+export async function downloadOrdersXlsxReport(params: Record<string, any>): Promise<void> {
+  if (isExportInProgress) {
+    Alert.alert('Export In Progress', 'Please wait for the current export to complete.');
+    return;
+  }
+  isExportInProgress = true;
+
+  const token = useAuthStore.getState().token;
+  const baseUrl = apiClient.defaults.baseURL;
+
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, val]) => {
+    if (val !== undefined && val !== null && val !== '') {
+      query.set(key, String(val));
+    }
+  });
+
+  const timestamp = new Date().toISOString().split('T')[0];
+  const fileName = `orders-report-${timestamp}.xlsx`;
+  const mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  try {
+    if (Platform.OS === 'web') {
+      const res = await apiClient.get('/orders/export', {
+        params: Object.fromEntries(query.entries()),
+        responseType: 'blob',
+      });
+      const contentType = (res.headers && res.headers['content-type']) || '';
+      const isCsv = contentType.includes('csv') || contentType.includes('text');
+      const ext = isCsv ? 'csv' : 'xlsx';
+      const actualFileName = `orders-report-${timestamp}.${ext}`;
+      const actualMimeType = isCsv ? 'text/csv' : mimeType;
+
+      const blob = new Blob([res.data], { type: actualMimeType });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', actualFileName);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } else {
+      const urlString = `${baseUrl}/orders/export?${query.toString()}`;
+
+      if (Platform.OS === 'android') {
+        try {
+          const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+          if (permissions.granted) {
+            const fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
+              permissions.directoryUri,
+              fileName,
+              mimeType
+            );
+
+            const tempFileUri = `${FileSystem.cacheDirectory}${fileName}`;
+            const downloadResult = await FileSystem.downloadAsync(urlString, tempFileUri, {
+              headers: token ? { Authorization: `Bearer ${token}` } : {},
+            });
+
+            const fileContent = await FileSystem.readAsStringAsync(downloadResult.uri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+
+            await FileSystem.StorageAccessFramework.writeAsStringAsync(fileUri, fileContent, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+
+            if (await Sharing.isAvailableAsync()) {
+              Alert.alert('Export Successful', `Orders report saved: ${fileName}`, [
+                { text: 'OK' },
+                {
+                  text: 'Open / Share',
+                  onPress: async () => {
+                    await Sharing.shareAsync(tempFileUri, {
+                      mimeType,
+                      dialogTitle: 'Open Orders Report',
+                      UTI: 'com.microsoft.excel.xlsx',
+                    });
+                  },
+                },
+              ]);
+            } else {
+              Alert.alert('Export Successful', `Orders report saved to: ${fileName}`);
+            }
+          } else {
+            await downloadAndShareFile(urlString, fileName, token);
+          }
+        } catch (safErr) {
+          console.warn('SAF orders export failed, using sharing fallback:', safErr);
+          await downloadAndShareFile(urlString, fileName, token);
+        }
+      } else {
+        // iOS
+        await downloadAndShareFile(urlString, fileName, token);
+      }
+    }
+  } catch (err: any) {
+    console.error('Orders export error, falling back to paginated export:', err);
+    try {
+      const { orderService } = require('@/services/order.service');
+      const rowMapper = (order: any) => ({
+        'Order ID': order.orderId,
+        'Status': order.status,
+        'From': order.fromEntityName,
+        'To': order.toEntityName,
+        'Type': order.type,
+        'Total Amount (INR)': order.totalAmount,
+        'Date': order.createdAt ? new Date(order.createdAt).toLocaleDateString('en-GB') : '',
+      });
+      await exportPaginatedData(orderService.list, params, rowMapper, { fileName, sheetName: 'Orders' });
+    } catch (fallbackErr: any) {
+      Alert.alert('Export Error', fallbackErr.message || 'Failed to export orders report.');
+    }
+  } finally {
+    isExportInProgress = false;
+  }
+}
+
+/**
  * Helper to fetch all data for a paginated endpoint and export it as XLSX.
  */
 export async function exportPaginatedData<T>(

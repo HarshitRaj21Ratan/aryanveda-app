@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -17,7 +17,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as XLSX from 'xlsx';
 
 import { useAuthStore } from '@/store/auth.store';
@@ -25,6 +25,9 @@ import { catalogService } from '@/services/catalog.service';
 import { userService } from '@/services/user.service';
 import { UserRole } from '@/types';
 import { formatCurrencyDecimal as formatCurrency } from '@/lib/format-utils';
+import ConfirmModal from '@/components/ui/ConfirmModal';
+import AddSkuModal from '@/components/catalog/AddSkuModal';
+import { STATE_OPTIONS } from '@/lib/states';
 
 const { width } = Dimensions.get('window');
 
@@ -258,6 +261,7 @@ export default function SKUCatalogScreen() {
   const [search, setSearch] = useState('');
   const [selectedPrincipal, setSelectedPrincipal] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [toggleTarget, setToggleTarget] = useState<any | null>(null);
 
   // Modals
   const [showAddSku, setShowAddSku] = useState(false);
@@ -278,11 +282,13 @@ export default function SKUCatalogScreen() {
   // Pricing Tab States
   const [pricingScope, setPricingScope] = useState<'GLOBAL' | 'STATE' | 'ENTITY'>('GLOBAL');
   const [selectedRole, setSelectedRole] = useState<UserRole>(UserRole.SUPER_STOCKIST);
+  const [selectedState, setSelectedState] = useState<string>('');
   const [selectedTargetIds, setSelectedTargetIds] = useState<string[]>([]);
   const [editingPrices, setEditingPrices] = useState<Record<string, string>>({});
 
   // Dropdown modals
   const [showScopeModal, setShowScopeModal] = useState(false);
+  const [showStateModal, setShowStateModal] = useState(false);
   const [showRoleModal, setShowRoleModal] = useState(false);
   const [showTargetModal, setShowTargetModal] = useState(false);
 
@@ -298,18 +304,39 @@ export default function SKUCatalogScreen() {
       });
     },
     enabled: isAuthorized,
+    staleTime: 2 * 60 * 1000,
+    placeholderData: (previousData) => previousData,
   });
 
   const { data: principalsData } = useQuery({
     queryKey: ['catalog-principals'],
     queryFn: () => catalogService.listPrincipals(),
     enabled: isAuthorized,
+    staleTime: 10 * 60 * 1000,
   });
 
   const skusList = catalogData?.data ?? [];
   const principals = principalsData?.data ?? [];
   const total = catalogData?.total ?? 0;
   const totalPages = catalogData?.pagination?.totalPages ?? Math.ceil(total / 20) ?? 1;
+
+  // Background prefetch next page
+  useEffect(() => {
+    if (catalogData && page < totalPages) {
+      const nextPage = page + 1;
+      queryClient.prefetchQuery({
+        queryKey: ['catalog', nextPage, search, selectedPrincipal, user?.role],
+        queryFn: () =>
+          catalogService.list({
+            page: nextPage,
+            limit: 20,
+            search: search || undefined,
+            principal: selectedPrincipal || undefined,
+          }),
+        staleTime: 2 * 60 * 1000,
+      });
+    }
+  }, [catalogData, page, totalPages, search, selectedPrincipal, user?.role, queryClient]);
 
   // Mutations
   const createSkuMutation = useMutation({
@@ -349,8 +376,10 @@ export default function SKUCatalogScreen() {
         return catalogService.enableSku(masterSkuId);
       }
     },
-    onSuccess: (_, variables) => {
+    onSuccess: () => {
+      setToggleTarget(null);
       queryClient.invalidateQueries({ queryKey: ['catalog'] });
+      queryClient.invalidateQueries({ queryKey: ['skus'] });
     },
     onError: (err: any) => {
       Alert.alert('Error', err.response?.data?.message || 'Failed to toggle SKU visibility');
@@ -385,28 +414,7 @@ export default function SKUCatalogScreen() {
   };
 
   const handleToggleAssortment = (sku: any) => {
-    const isCurrentlyEnabled = !!sku.enabled;
-    const title = isCurrentlyEnabled
-      ? 'Disable SKU for Your Network'
-      : 'Enable SKU for Your Network';
-    const description = isCurrentlyEnabled
-      ? `Disabling this SKU will immediately remove it from all downstream distributors, agents, and retailers in your network. They will no longer be able to view or order this product.\n\nProduct: ${sku.name}\nBox Price: ${formatCurrency(sku.boxPrice || 0)}\nUnit Price: ${formatCurrency(sku.unitPrice || 0)}`
-      : `Enabling this SKU will make it visible to all downstream entities in your network. Distributors, agents, and retailers will be able to view and order this product.\n\nProduct: ${sku.name}\nBox Price: ${formatCurrency(sku.boxPrice || 0)}\nUnit Price: ${formatCurrency(sku.unitPrice || 0)}`;
-
-    Alert.alert(
-      title,
-      description,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: isCurrentlyEnabled ? 'Disable SKU' : 'Enable SKU',
-          style: isCurrentlyEnabled ? 'destructive' : 'default',
-          onPress: () => {
-            toggleSkuMutation.mutate({ masterSkuId: sku.masterSkuId, enabled: isCurrentlyEnabled });
-          },
-        },
-      ]
-    );
+    setToggleTarget(sku);
   };
 
   // Fetch States for State-wise scope
@@ -416,12 +424,13 @@ export default function SKUCatalogScreen() {
     enabled: isAuthorized && activeTab === 'pricing' && pricingScope === 'STATE',
   });
 
-  // Fetch Target Entities for Entity-Specific scope based on Role (always enabled in pricing tab)
+  // Fetch Target Entities for Entity-Specific scope based on Role (filtered by state if STATE scope)
   const { data: pricingTargets } = useQuery({
-    queryKey: ['pricing-entities-v4', user?.role, selectedRole],
+    queryKey: ['pricing-entities-v5', user?.role, selectedRole, pricingScope, selectedState],
     queryFn: async () => {
       if (isAdmin) {
-        return userService.listAll({ role: selectedRole, limit: 1000 });
+        const stateParam = (pricingScope === 'STATE' && selectedState) ? selectedState : undefined;
+        return userService.listAll({ role: selectedRole, limit: 1000, state: stateParam });
       }
       if (isSS) {
         return userService.listManagement({ role: UserRole.DISTRIBUTOR, limit: 500 });
@@ -444,20 +453,28 @@ export default function SKUCatalogScreen() {
 
   // Determine effective scope and primary target for the API
   const effectiveScope = isAdmin
-    ? (selectedTargetIds.length > 0
-      ? (pricingScope === 'STATE' ? 'STATE' : 'ENTITY')
-      : 'GLOBAL')
+    ? (pricingScope === 'STATE'
+      ? (selectedTargetIds.length > 0 ? 'ENTITY' : 'STATE')
+      : (selectedTargetIds.length > 0 ? 'ENTITY' : 'GLOBAL'))
     : 'ENTITY';
-  const primaryTargetId = selectedTargetIds[0] || undefined;
+  const primaryTargetId = isAdmin
+    ? (pricingScope === 'STATE'
+      ? (selectedTargetIds.length > 0 ? selectedTargetIds[0] : (selectedState || undefined))
+      : (selectedTargetIds.length > 0 ? selectedTargetIds[0] : undefined))
+    : selectedTargetIds[0];
   const selectedTargetId = primaryTargetId;
 
   const isPricingSelectionValid = isAdmin
-    ? (pricingScope === 'GLOBAL' ? true : selectedTargetIds.length > 0)
+    ? (pricingScope === 'GLOBAL'
+      ? true
+      : pricingScope === 'STATE'
+        ? Boolean(selectedState)
+        : selectedTargetIds.length > 0)
     : selectedTargetIds.length > 0;
 
   // Scoped Pricing list query
   const { data: pricingRes, isLoading: pricingLoading, refetch: refetchPricing } = useQuery({
-    queryKey: ['pricing-rows-scoped', isAdmin ? effectiveScope : 'ENTITY', primaryTargetId],
+    queryKey: ['pricing-rows-scoped', isAdmin ? effectiveScope : 'ENTITY', primaryTargetId, selectedState],
     queryFn: () => {
       if (isAdmin) {
         return catalogService.adminGetScopedPricing(effectiveScope, {
@@ -926,11 +943,11 @@ export default function SKUCatalogScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Search bar & Admin Actions inside catalog tab */}
+        {/* Search bar & Action buttons inside catalog tab */}
         {activeTab === 'catalog' && (
           <View>
-            {isAdmin && (
-              /* Action Button Controls Grid */
+            {isAdmin ? (
+              /* Action Button Controls Grid for Admin */
               <View className="flex-row gap-2 mb-4 justify-between">
                 <TouchableOpacity
                   onPress={() => handleDownloadTemplate('catalog-bulk-upload-template.xlsx')}
@@ -948,7 +965,7 @@ export default function SKUCatalogScreen() {
                   disabled={isUploadingTemplate}
                   className="flex-1 border border-gray-200 bg-white rounded-xl py-3 px-1 flex-row items-center justify-center gap-1"
                 >
-                  <Ionicons name="upload-outline" size={14} color="#475569" />
+                  <Ionicons name="cloud-upload-outline" size={14} color="#475569" />
                   <Text className="text-[10px] font-bold text-slate-700 text-center leading-3">
                     {isUploadingTemplate ? 'Uploading...' : `Upload\nTemplate`}
                   </Text>
@@ -971,6 +988,24 @@ export default function SKUCatalogScreen() {
                 >
                   <Ionicons name="add-outline" size={15} color="white" />
                   <Text className="text-[10px] font-bold text-white text-center leading-3">Add New{"\n"}SKU</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              /* Action Button for Non-Admin roles (Distributor, Super Stockist, Sales Officers, etc.) */
+              <View className="mb-4">
+                <TouchableOpacity
+                  onPress={() => handleDownloadTemplate('catalog-bulk-upload-template.xlsx')}
+                  disabled={isDownloadingTemplate}
+                  className="w-full border border-gray-250 bg-white rounded-xl py-3 px-4 flex-row items-center justify-center gap-2 shadow-xs"
+                >
+                  {isDownloadingTemplate ? (
+                    <ActivityIndicator size="small" color="#475569" />
+                  ) : (
+                    <Ionicons name="download-outline" size={16} color="#475569" />
+                  )}
+                  <Text className="text-xs font-bold text-slate-700">
+                    {isDownloadingTemplate ? 'Downloading Template...' : 'Download Template'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -1219,22 +1254,20 @@ export default function SKUCatalogScreen() {
                     <View className="flex-row items-center gap-2">
                       <Text className="text-xs text-gray-700 font-semibold w-24">Select State:</Text>
                       <TouchableOpacity
-                        onPress={() => setShowTargetModal(true)}
+                        onPress={() => setShowStateModal(true)}
                         className="flex-row items-center justify-between border border-gray-200 bg-white rounded-xl px-4 py-2 flex-1"
                       >
-                        <Text className={`text-xs ${selectedTargetIds.length > 0 ? 'text-gray-800 font-semibold' : 'text-gray-400'}`}>
-                          {selectedTargetIds.length === 0
-                            ? 'Select State...'
-                            : selectedTargetIds.length === 1
-                              ? selectedTargetIds[0]
-                              : `${selectedTargetIds.length} States Selected`}
+                        <Text className={`text-xs ${selectedState ? 'text-gray-800 font-semibold' : 'text-gray-400'}`}>
+                          {selectedState
+                            ? (STATE_OPTIONS.find((s) => s.value === selectedState)?.label || selectedState)
+                            : 'Select State...'}
                         </Text>
                         <Ionicons name="chevron-down" size={14} color="#6b7280" />
                       </TouchableOpacity>
                     </View>
                   )}
 
-                  {pricingScope === 'GLOBAL' && (
+                  {(pricingScope === 'GLOBAL' || (pricingScope === 'STATE' && selectedState)) && (
                     <View className="flex-row items-center gap-2">
                       <Text className="text-xs text-gray-700 font-semibold w-10">Role:</Text>
                       <TouchableOpacity
@@ -1306,7 +1339,7 @@ export default function SKUCatalogScreen() {
                 disabled={isUploadingTemplate}
                 className="flex-1 border border-gray-200 bg-white rounded-xl py-3 px-3 flex-row items-center justify-center gap-1.5"
               >
-                <Ionicons name="upload-outline" size={15} color="#475569" />
+                <Ionicons name="cloud-upload-outline" size={15} color="#475569" />
                 <Text className="text-[11px] font-bold text-slate-700 text-center">
                   {isUploadingTemplate ? 'Uploading...' : 'Upload Template'}
                 </Text>
@@ -1314,12 +1347,12 @@ export default function SKUCatalogScreen() {
             </View>
 
             {/* Main pricing view */}
-            {((isAdmin && pricingScope !== 'GLOBAL') || !isAdmin) && !selectedTargetId ? (
+            {((isAdmin && pricingScope === 'STATE' && !selectedState) || (!isAdmin && !selectedTargetId)) ? (
               <View className="bg-white border border-gray-200 rounded-xl p-8 items-center justify-center shadow-sm">
                 <Ionicons name="logo-usd" size={32} color="#9ca3af" className="opacity-45 mb-2" />
                 <Text className="text-xs text-gray-500 text-center">
                   {isAdmin
-                    ? 'Select a target state or entity to manage SKU prices'
+                    ? 'Select a target state to manage SKU prices'
                     : `Select a ${isSS ? 'distributor' : 'retailer'} to manage their SKU prices`}
                 </Text>
               </View>
@@ -1582,10 +1615,25 @@ export default function SKUCatalogScreen() {
               selectedValue={pricingScope}
               onSelect={(val: any) => {
                 setPricingScope(val);
+                setSelectedState('');
                 setSelectedTargetIds([]);
                 setEditingPrices({});
               }}
               title="Select Pricing Scope"
+            />
+
+            {/* State Selection Modal */}
+            <SelectorModal
+              visible={showStateModal}
+              onClose={() => setShowStateModal(false)}
+              data={STATE_OPTIONS.map((s) => ({ value: s.value, label: s.label }))}
+              selectedValue={selectedState}
+              onSelect={(val: string) => {
+                setSelectedState(val);
+                setSelectedTargetIds([]);
+                setEditingPrices({});
+              }}
+              title="Select Target State"
             />
 
             {/* Role Selection Modal */}
@@ -1606,24 +1654,20 @@ export default function SKUCatalogScreen() {
               title="Select Target Role"
             />
 
-            {/* Target State or Entity Modal (Multi-Select Enabled) */}
+            {/* Target Entity Modal (Multi-Select Enabled) */}
             <MultiSelectorModal
               visible={showTargetModal}
               onClose={() => setShowTargetModal(false)}
-              data={
-                pricingScope === 'STATE'
-                  ? statesList.filter((state: string) => typeof state === 'string' && !state.includes(',')).map((state: string) => ({ value: state, label: state }))
-                  : entitiesList.map((e: any) => ({
-                    value: e.entityId,
-                    label: `${e.name} (${e.entityId})`,
-                  }))
-              }
+              data={entitiesList.map((e: any) => ({
+                value: e.entityId,
+                label: `${e.name} (${e.entityId})`,
+              }))}
               selectedValues={selectedTargetIds}
               onSelect={(vals: string[]) => {
                 setSelectedTargetIds(vals);
                 setEditingPrices({});
               }}
-              title={pricingScope === 'STATE' ? 'Select Target States' : 'Select Target Entities'}
+              title={`Select ${selectedRole === UserRole.SUPER_STOCKIST ? 'Super Stockists' : selectedRole === UserRole.DISTRIBUTOR ? 'Distributors' : 'Retailers'}`}
             />
           </View>
         )}
@@ -1655,103 +1699,10 @@ export default function SKUCatalogScreen() {
       )}
 
       {/* Add SKU Modal */}
-      {showAddSku && (
-        <Modal visible={showAddSku} animationType="slide" onRequestClose={() => setShowAddSku(false)}>
-          <SafeAreaView className="flex-1 bg-white">
-            <View className="px-6 py-4 border-b border-gray-100 flex-row items-center justify-between">
-              <Text className="text-lg font-bold text-gray-800">Add New SKU</Text>
-              <TouchableOpacity onPress={() => setShowAddSku(false)} className="p-1">
-                <Ionicons name="close" size={24} color="#374151" />
-              </TouchableOpacity>
-            </View>
-            <ScrollView className="flex-1 p-6 gap-4" showsVerticalScrollIndicator={false}>
-              <View className="mb-4">
-                <Text className="text-xs font-semibold text-gray-500 mb-1">Product Code *</Text>
-                <TextInput
-                  value={skuCode}
-                  onChangeText={setSkuCode}
-                  placeholder="e.g. SKU-001"
-                  className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-gray-50"
-                />
-              </View>
-              <View className="mb-4">
-                <Text className="text-xs font-semibold text-gray-500 mb-1">Product Name *</Text>
-                <TextInput
-                  value={skuName}
-                  onChangeText={setSkuName}
-                  placeholder="e.g. Hair Oil 200ml"
-                  className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-gray-50"
-                />
-              </View>
-              <View className="mb-4">
-                <Text className="text-xs font-semibold text-gray-500 mb-1">Principal Category *</Text>
-                <TextInput
-                  value={skuPrincipal}
-                  onChangeText={setSkuPrincipal}
-                  placeholder="e.g. Hair Care"
-                  className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-gray-50"
-                />
-              </View>
-              <View className="flex-row gap-3 mb-4">
-                <View className="flex-1">
-                  <Text className="text-xs font-semibold text-gray-500 mb-1">MRP Unit Price *</Text>
-                  <TextInput
-                    value={skuUnitPrice}
-                    onChangeText={setSkuUnitPrice}
-                    placeholder="INR"
-                    keyboardType="numeric"
-                    className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-gray-50"
-                  />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-xs font-semibold text-gray-500 mb-1">Pack Qty</Text>
-                  <TextInput
-                    value={skuPackQty}
-                    onChangeText={setSkuPackQty}
-                    placeholder="Pieces per box"
-                    keyboardType="numeric"
-                    className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-gray-50"
-                  />
-                </View>
-              </View>
-              <View className="mb-4">
-                <Text className="text-xs font-semibold text-gray-500 mb-1">SS Price Dozen</Text>
-                <TextInput
-                  value={skuPriceDozenSS}
-                  onChangeText={setSkuPriceDozenSS}
-                  placeholder="INR"
-                  keyboardType="numeric"
-                  className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-gray-50"
-                />
-              </View>
-              <View className="flex-row justify-between items-center mb-6">
-                <Text className="text-xs font-semibold text-gray-500">Scheme Eligible</Text>
-                <Switch
-                  value={skuSchemeEligible}
-                  onValueChange={setSkuSchemeEligible}
-                  trackColor={{ false: '#d1d5db', true: '#f97316' }}
-                  thumbColor={skuSchemeEligible ? '#f37021' : '#f3f4f6'}
-                />
-              </View>
-
-              <View className="flex-row justify-end gap-3 mb-16">
-                <TouchableOpacity
-                  onPress={() => setShowAddSku(false)}
-                  className="px-5 py-2.5 border border-gray-200 rounded-lg"
-                >
-                  <Text className="text-sm font-semibold text-gray-600">Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={handleCreateSku}
-                  className="px-5 py-2.5 bg-[#f37021] rounded-lg"
-                >
-                  <Text className="text-sm font-bold text-white">Create SKU</Text>
-                </TouchableOpacity>
-              </View>
-            </ScrollView>
-          </SafeAreaView>
-        </Modal>
-      )}
+      <AddSkuModal
+        visible={showAddSku}
+        onClose={() => setShowAddSku(false)}
+      />
 
       {/* Add Stock Modal */}
       {showAddStock && (
@@ -1814,6 +1765,68 @@ export default function SKUCatalogScreen() {
         </Modal>
       )}
 
+      {/* Toggle Confirmation Modal (SS only) */}
+      {isSS && (
+        <ConfirmModal
+          open={!!toggleTarget}
+          title={
+            toggleTarget?.enabled
+              ? 'Disable SKU for Your Network'
+              : 'Enable SKU for Your Network'
+          }
+          description={
+            toggleTarget?.enabled
+              ? 'Disabling this SKU will immediately remove it from all downstream distributors, agents, and retailers in your network. They will no longer be able to view or order this product.'
+              : 'Enabling this SKU will make it visible to all downstream entities in your network. Distributors, agents, and retailers will be able to view and order this product.'
+          }
+          confirmLabel={toggleTarget?.enabled ? 'Disable SKU' : 'Enable SKU'}
+          cancelLabel="Cancel"
+          variant={toggleTarget?.enabled ? 'danger' : 'warning'}
+          loading={toggleSkuMutation.isPending}
+          onConfirm={() => {
+            if (toggleTarget) {
+              toggleSkuMutation.mutate({
+                masterSkuId: toggleTarget.masterSkuId,
+                enabled: !!toggleTarget.enabled,
+              });
+            }
+          }}
+          onCancel={() => {
+            if (!toggleSkuMutation.isPending) setToggleTarget(null);
+          }}
+        >
+          {toggleTarget && (
+            <View className="rounded-xl border border-gray-200 bg-gray-50 p-3.5 my-1">
+              <View className="flex-row justify-between items-start mb-2">
+                <Text className="text-xs text-gray-500 font-medium">Product</Text>
+                <Text className="text-xs font-semibold text-gray-900 flex-1 text-right ml-3" numberOfLines={2}>
+                  {toggleTarget.name}
+                </Text>
+              </View>
+              <View className="flex-row justify-between items-center mb-2">
+                <Text className="text-xs text-gray-500 font-medium">Box Price</Text>
+                <Text className="text-xs font-bold text-gray-900">
+                  {formatCurrency(toggleTarget.boxPrice || 0)}
+                </Text>
+              </View>
+              <View className="flex-row justify-between items-center mb-2">
+                <Text className="text-xs text-gray-500 font-medium">Unit Price</Text>
+                <Text className="text-xs font-semibold text-gray-900">
+                  {formatCurrency(toggleTarget.unitPrice || 0)}
+                </Text>
+              </View>
+              <View className="flex-row justify-between items-center">
+                <Text className="text-xs text-gray-500 font-medium">Current Status</Text>
+                <View className={`px-2.5 py-0.5 rounded-full border ${toggleTarget.enabled ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-100 border-gray-200'}`}>
+                  <Text className={`text-[10px] font-bold ${toggleTarget.enabled ? 'text-emerald-700' : 'text-gray-600'}`}>
+                    {toggleTarget.enabled ? 'Enabled' : 'Disabled'}
+                  </Text>
+                </View>
+              </View>
+            </View>
+          )}
+        </ConfirmModal>
+      )}
 
     </View>
   );

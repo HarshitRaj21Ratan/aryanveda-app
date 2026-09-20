@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -20,6 +20,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuthStore } from '@/store/auth.store';
 import { orderService } from '@/services/order.service';
 import { userService } from '@/services/user.service';
@@ -32,10 +33,13 @@ import {
   formatCurrency,
   getDistanceMeters,
   participantLabel,
+  canApproveOrder,
   canDispatchOrder,
   canDeliverOrder,
   canCancelOrder,
 } from '@/lib/order-helpers';
+import ConfirmModal from '@/components/ui/ConfirmModal';
+import ApproveOrderModal from '@/components/orders/ApproveOrderModal';
 
 const { width } = Dimensions.get('window');
 
@@ -63,20 +67,21 @@ export default function OrdersScreen() {
   const user = useAuthStore((s) => s.user);
   const queryClient = useQueryClient();
 
-  const isSS = user?.role === UserRole.SUPER_STOCKIST;
-  const isDist = user?.role === UserRole.DISTRIBUTOR;
-  const isSO = user?.role === UserRole.SO || user?.role === UserRole.ASE;
-  const isRetailer = user?.role === UserRole.RETAILER;
-  const isAdmin = user?.role === UserRole.ADMIN;
-  const isFinance = user?.role === UserRole.FINANCE;
-  const isDispatch = user?.role === UserRole.DISPATCH;
-  const isRSM = user?.role === UserRole.RSM;
-  const isASM = user?.role === UserRole.ASM;
-  const isManager = isRSM || isASM;
+  const roleStr = (user?.role || '').toLowerCase();
+  const isSS = user?.role === UserRole.SUPER_STOCKIST || roleStr === 'super_stockist';
+  const isDist = user?.role === UserRole.DISTRIBUTOR || roleStr === 'distributor';
+  const isSO = user?.role === UserRole.SO || user?.role === UserRole.ASE || roleStr === 'so' || roleStr === 'ase';
+  const isRetailer = user?.role === UserRole.RETAILER || roleStr === 'retailer';
+  const isAdmin = user?.role === UserRole.ADMIN || roleStr === 'admin';
+  const isFinance = user?.role === UserRole.FINANCE || roleStr === 'finance';
+  const isDispatch = user?.role === UserRole.DISPATCH || roleStr === 'dispatch';
+  const isRSM = user?.role === UserRole.RSM || roleStr === 'rsm';
+  const isASM = user?.role === UserRole.ASM || roleStr === 'asm';
+  const isNSM = user?.role === UserRole.NSM || roleStr === 'nsm';
+  const isManager = isRSM || isASM || isNSM;
+  const isSalesUser = isRSM || isASM;
 
-  const defaultTypeFilter = routeParams.type !== undefined
-    ? routeParams.type
-    : (routeParams.status ? '' : (isFinance ? 'primary_approve' : isDispatch ? 'primary_dispatch' : ''));
+  const defaultTypeFilter = routeParams.type !== undefined ? routeParams.type : '';
 
   const [page, setPage] = useState(1);
   const [typeFilter, setTypeFilter] = useState(defaultTypeFilter);
@@ -95,12 +100,47 @@ export default function OrdersScreen() {
 
   // SO target role selection
   const [soTargetRole, setSoTargetRole] = useState<'RETAILER' | 'DISTRIBUTOR'>('RETAILER');
+  const [salesUserTargetRole, setSalesUserTargetRole] = useState<'SUPER_STOCKIST' | 'DISTRIBUTOR'>('SUPER_STOCKIST');
   const [selectedRetailerId, setSelectedRetailerId] = useState('');
   const [selectedDistributorId, setSelectedDistributorId] = useState('');
 
   // SO Beat & Retailer search filters
   const [retailerBeatFilter, setRetailerBeatFilter] = useState('');
   const [retailerSearchQuery, setRetailerSearchQuery] = useState('');
+
+  // Load persisted beat filter on mount for ASE / SO
+  React.useEffect(() => {
+    if (!isSO || !user?.entityId) return;
+    const loadSavedBeatFilter = async () => {
+      try {
+        const savedBeat = await AsyncStorage.getItem(`orders_retailer_beat_filter_${user.entityId}`);
+        if (savedBeat) {
+          setRetailerBeatFilter(savedBeat);
+          setBeatSearchQuery(savedBeat);
+        }
+      } catch (e) {
+        console.error('Failed to load saved beat filter', e);
+      }
+    };
+    void loadSavedBeatFilter();
+  }, [isSO, user?.entityId]);
+
+  // Persist beat filter whenever it changes
+  React.useEffect(() => {
+    if (!isSO || !user?.entityId) return;
+    const saveBeatFilter = async () => {
+      try {
+        if (retailerBeatFilter) {
+          await AsyncStorage.setItem(`orders_retailer_beat_filter_${user.entityId}`, retailerBeatFilter);
+        } else {
+          await AsyncStorage.removeItem(`orders_retailer_beat_filter_${user.entityId}`);
+        }
+      } catch (e) {
+        console.error('Failed to persist beat filter', e);
+      }
+    };
+    void saveBeatFilter();
+  }, [isSO, retailerBeatFilter, user?.entityId]);
 
   // Dropdown modals
   const [showTypeModal, setShowTypeModal] = useState(false);
@@ -128,6 +168,8 @@ export default function OrdersScreen() {
   const [userLongitude, setUserLongitude] = useState<number | null>(null);
   const [geofenceDistance, setGeofenceDistance] = useState<number>(0);
   const [isManualVerify, setIsManualVerify] = useState(false);
+  // Approve Order Modal State
+  const [approveModalOrderId, setApproveModalOrderId] = useState<string | null>(null);
 
   const fetchBeatSuggestions = async (q: string) => {
     try {
@@ -138,35 +180,6 @@ export default function OrdersScreen() {
       console.error(e);
     } finally {
       setBeatLoading(false);
-    }
-  };
-
-  const handleExport = async () => {
-    if (orders.length === 0) {
-      Alert.alert('No Data', 'There are no orders to export.');
-      return;
-    }
-    setIsExporting(true);
-    try {
-      const rows = orders.map((order) => ({
-        'Order ID': order.orderId,
-        'Status': STATUS_CONFIG[order.status]?.label ?? order.status,
-        'From': order.fromEntityName,
-        'To': order.toEntityName,
-        'Type': order.type === OrderType.PRIMARY ? 'Primary' : order.type === OrderType.PRIMARY_HANDOVER ? 'Primary Handover' : 'Secondary',
-        'Total Amount (INR)': order.totalAmount,
-        'Date': new Date(order.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
-      }));
-      const { downloadXlsxReport } = require('@/lib/xlsx-export');
-      await downloadXlsxReport(rows, {
-        fileName: `orders-export-${new Date().toISOString().split('T')[0]}.xlsx`,
-        sheetName: 'Orders',
-      });
-    } catch (e) {
-      console.error(e);
-      Alert.alert('Error', 'Failed to export orders');
-    } finally {
-      setIsExporting(false);
     }
   };
 
@@ -188,10 +201,75 @@ export default function OrdersScreen() {
     staleTime: 5 * 60 * 1000,
   });
 
-  // 2. Fetch Connected Distributors (SO/ASM/RSM only)
+  // 1c. Fetch Today's Visit Performance for TC/PC badges (SO/ASE only)
+  const { data: todayPerformanceData } = useQuery({
+    queryKey: ['visit-performance-today', user?.entityId],
+    queryFn: () => visitService.getPerformance('day'),
+    enabled: !!user && isSO,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // 1d. Fetch Today's Secondary Orders for TC/PC badges (SO/ASE only)
+  const { data: todayOrdersData } = useQuery({
+    queryKey: ['so-today-secondary-orders', user?.entityId],
+    queryFn: () => orderService.list({ type: OrderType.SECONDARY, limit: 500 }),
+    enabled: !!user && isSO,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // 1e. Fetch Authorized SO for Retailer (Retailer only)
+  const { data: mySoData } = useQuery({
+    queryKey: ['retailer-my-so', user?.entityId],
+    queryFn: () => retailerAuthorizationService.getMySo(),
+    enabled: !!user && isRetailer,
+    staleTime: 5 * 60 * 1000,
+  });
+  const retailerHasAuthorizedSo = Boolean(mySoData?.data);
+
+  const todayCallStatusMap = useMemo(() => {
+    const map: Record<string, 'PC' | 'TC'> = {};
+    if (!isSO) return map;
+
+    // 1. Process today's visit logs
+    const visits = (todayPerformanceData as any)?.recentVisits ?? [];
+    for (const v of visits) {
+      const rId = v.retailerEntityId || v.retailerId;
+      if (rId) {
+        if (v.productive) {
+          map[rId] = 'PC';
+        } else if (!map[rId]) {
+          map[rId] = 'TC';
+        }
+      }
+    }
+
+    // 2. Process today's secondary orders
+    const orders = (todayOrdersData as any)?.data ?? [];
+    const todayStr = new Date().toISOString().split('T')[0];
+    for (const order of orders) {
+      const orderDateStr = order.createdAt ? new Date(order.createdAt).toISOString().split('T')[0] : '';
+      if (orderDateStr === todayStr) {
+        const retailerId = order.fromEntityId || order.onBehalfOfEntityId || order.onBehalfOf;
+        if (retailerId) {
+          map[retailerId] = 'PC';
+        }
+      }
+    }
+
+    return map;
+  }, [isSO, todayPerformanceData, todayOrdersData]);
+
+  // 2. Fetch Connected Distributors & Super Stockists (SO/ASM/RSM only)
   const { data: connectedDistributorsData } = useQuery({
     queryKey: ['connected-distributors-orders', user?.entityId],
     queryFn: () => orderService.getConnectedDistributors(),
+    enabled: !!user && (isSO || isManager),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: connectedSuperStockistsData } = useQuery({
+    queryKey: ['connected-super-stockists-orders', user?.entityId],
+    queryFn: () => orderService.getConnectedSuperStockists(),
     enabled: !!user && (isSO || isManager),
     staleTime: 5 * 60 * 1000,
   });
@@ -217,14 +295,19 @@ export default function OrdersScreen() {
   }, [soRetailersData, allRetailersData]);
 
   const distributors = connectedDistributorsData?.data?.distributors ?? [];
+  const superStockists = connectedSuperStockistsData?.data?.superStockists ?? [];
+
+  const activeSalesUserEntities = isSO
+    ? distributors
+    : (salesUserTargetRole === 'SUPER_STOCKIST' ? superStockists : distributors);
 
   const selectedRetailer = useMemo(() => {
     return retailers.find((r: any) => r.entityId === selectedRetailerId || r.retailerId === selectedRetailerId || r._id === selectedRetailerId);
   }, [retailers, selectedRetailerId]);
 
   const selectedDistributor = useMemo(() => {
-    return distributors.find((d) => d.entityId === selectedDistributorId);
-  }, [distributors, selectedDistributorId]);
+    return activeSalesUserEntities.find((d) => d.entityId === selectedDistributorId);
+  }, [activeSalesUserEntities, selectedDistributorId]);
 
   const soBeatOptions = useMemo(() => {
     const beats = new Set<string>();
@@ -253,7 +336,80 @@ export default function OrdersScreen() {
     return filtered;
   }, [retailers, retailerBeatFilter, retailerSearchQuery]);
 
-  const isDistributorMode = isSO ? soTargetRole === 'DISTRIBUTOR' : isManager;
+  // Auto-clear retailer selection if current retailer does not belong to newly selected beat filter
+  React.useEffect(() => {
+    if (!isSO) return;
+    const selectedBeat = retailerBeatFilter.trim().toLowerCase();
+    if (!selectedBeat || !selectedRetailerId) return;
+    const current = retailers.find((r: any) => r.retailerId === selectedRetailerId || r.entityId === selectedRetailerId || r._id === selectedRetailerId);
+    const currentBeat = (current?.beat ?? '').trim().toLowerCase();
+    if (current && currentBeat !== selectedBeat) {
+      setSelectedRetailerId('');
+    }
+  }, [isSO, retailerBeatFilter, selectedRetailerId, retailers]);
+
+  // Helper to compute API params shared by summary and list queries
+  const getOrderApiParams = React.useCallback(() => {
+    const apiType = ['primary_handover', 'primary_approve', 'primary_dispatch'].includes(typeFilter)
+      ? OrderType.PRIMARY
+      : (typeFilter ? (typeFilter as OrderType) : (isSO && soTargetRole === 'RETAILER' ? OrderType.SECONDARY : undefined));
+
+    const listStatus = typeFilter === 'primary_handover'
+      ? OrderStatus.CREATED
+      : typeFilter === 'primary_approve'
+        ? OrderStatus.IN_FINANCE
+        : typeFilter === 'primary_dispatch'
+          ? OrderStatus.APPROVED
+          : (statusFilter ? (statusFilter as OrderStatus) : undefined);
+
+    const summaryStatus = typeFilter === 'primary_handover'
+      ? OrderStatus.CREATED
+      : typeFilter === 'primary_approve'
+        ? OrderStatus.IN_FINANCE
+        : typeFilter === 'primary_dispatch'
+          ? OrderStatus.APPROVED
+          : undefined;
+
+    const apiOrderFlow = ['primary_handover', 'primary_approve', 'primary_dispatch'].includes(typeFilter)
+      ? 'admin_to_super'
+      : (levelFilter ? levelFilter : (isManager ? (salesUserTargetRole === 'SUPER_STOCKIST' ? 'admin_to_super' : (typeFilter === OrderType.PRIMARY ? 'super_to_dist' : (typeFilter === OrderType.SECONDARY ? 'dist_to_ret' : 'distributor_all'))) : (isSO ? (soTargetRole === 'DISTRIBUTOR' ? (typeFilter === OrderType.PRIMARY ? 'super_to_dist' : (typeFilter === OrderType.SECONDARY ? 'dist_to_ret' : 'distributor_all')) : 'dist_to_ret') : undefined)));
+
+    const searchParam = isSO
+      ? (soTargetRole === 'RETAILER' ? selectedRetailerId : selectedDistributorId) || undefined
+      : selectedDistributorId || undefined;
+
+    return {
+      apiType,
+      listStatus,
+      summaryStatus,
+      apiOrderFlow,
+      beatParam: (isSO && soTargetRole === 'RETAILER' && retailerBeatFilter) ? retailerBeatFilter : (beatFilter || undefined),
+      searchParam,
+    };
+  }, [typeFilter, statusFilter, levelFilter, isManager, salesUserTargetRole, isSO, soTargetRole, selectedRetailerId, selectedDistributorId, retailerBeatFilter, beatFilter]);
+
+  const handleExport = React.useCallback(async () => {
+    setIsExporting(true);
+    try {
+      const { apiType, listStatus, apiOrderFlow, beatParam, searchParam } = getOrderApiParams();
+
+      const baseParams = {
+        type: apiType,
+        status: listStatus,
+        state: stateFilter || undefined,
+        beat: beatParam,
+        orderFlow: apiOrderFlow,
+        search: searchParam,
+      };
+
+      await orderService.exportOrdersXlsx(baseParams);
+    } catch (e: any) {
+      console.error('[OrdersScreen] Export error:', e);
+      Alert.alert('Error', e.message || 'Failed to export orders');
+    } finally {
+      setIsExporting(false);
+    }
+  }, [getOrderApiParams, stateFilter]);
 
   const { data: summaryData, isLoading: summaryLoading, refetch: refetchSummary } = useQuery({
     queryKey: [
@@ -262,45 +418,46 @@ export default function OrdersScreen() {
       statusFilter,
       stateFilter,
       beatFilter,
+      retailerBeatFilter,
       levelFilter,
       soTargetRole,
+      salesUserTargetRole,
       selectedRetailerId,
       selectedDistributorId,
     ],
     queryFn: async () => {
-      const apiType = ['primary_handover', 'primary_approve', 'primary_dispatch'].includes(typeFilter)
-        ? OrderType.PRIMARY
-        : (typeFilter ? (typeFilter as OrderType) : (isDistributorMode ? undefined : OrderType.SECONDARY));
-
-      const apiStatus = typeFilter === 'primary_handover'
-        ? OrderStatus.CREATED
-        : typeFilter === 'primary_approve'
-          ? OrderStatus.IN_FINANCE
-          : typeFilter === 'primary_dispatch'
-            ? OrderStatus.APPROVED
-            : (statusFilter ? (statusFilter as OrderStatus) : undefined);
-
-      const apiOrderFlow = ['primary_handover', 'primary_approve', 'primary_dispatch'].includes(typeFilter)
-        ? 'admin_to_super'
-        : (levelFilter ? levelFilter : (isDistributorMode ? undefined : 'dist_to_ret'));
-
-      const params: any = {
-        type: apiType,
-        status: apiStatus,
-        state: stateFilter || undefined,
-        beat: beatFilter || undefined,
-        orderFlow: apiOrderFlow,
-      };
-      if (isSO) {
-        params.search = (soTargetRole === 'RETAILER' ? selectedRetailerId : selectedDistributorId) || undefined;
-      } else {
-        params.search = selectedDistributorId || undefined;
+      try {
+        const { apiType, summaryStatus, apiOrderFlow, beatParam, searchParam } = getOrderApiParams();
+        const params: any = {
+          type: apiType,
+          status: summaryStatus,
+          state: stateFilter || undefined,
+          beat: beatParam,
+          orderFlow: apiOrderFlow,
+          search: searchParam,
+        };
+        const res = await orderService.summary(params);
+        const raw = (res as any)?.data?.summary ?? (res as any)?.summary ?? (res as any)?.data ?? res;
+        if (raw && typeof raw === 'object') {
+          return {
+            CREATED: raw.CREATED ?? 0,
+            IN_FINANCE: raw.IN_FINANCE ?? 0,
+            APPROVED: raw.APPROVED ?? 0,
+            DISPATCHED: raw.DISPATCHED ?? 0,
+            DELIVERED: raw.DELIVERED ?? 0,
+            CANCELLED: raw.CANCELLED ?? 0,
+            total: raw.total ?? (Number(raw.CREATED || 0) + Number(raw.IN_FINANCE || 0) + Number(raw.APPROVED || 0) + Number(raw.DISPATCHED || 0) + Number(raw.DELIVERED || 0) + Number(raw.CANCELLED || 0)),
+          };
+        }
+        return { CREATED: 0, IN_FINANCE: 0, APPROVED: 0, DISPATCHED: 0, DELIVERED: 0, CANCELLED: 0, total: 0 };
+      } catch (err) {
+        console.error('[OrdersScreen] Summary fetch error:', err);
+        return { CREATED: 0, IN_FINANCE: 0, APPROVED: 0, DISPATCHED: 0, DELIVERED: 0, CANCELLED: 0, total: 0 };
       }
-      const res = await orderService.summary(params);
-      return res.data?.summary;
     },
     enabled: !!user,
-    staleTime: 5 * 60 * 1000,
+    staleTime: 30 * 1000,
+    placeholderData: (previousData) => previousData,
   });
 
   // 3. Fetch Orders List
@@ -312,63 +469,217 @@ export default function OrdersScreen() {
       statusFilter,
       stateFilter,
       beatFilter,
+      retailerBeatFilter,
       levelFilter,
       soTargetRole,
+      salesUserTargetRole,
       selectedRetailerId,
       selectedDistributorId,
     ],
     queryFn: async () => {
-      const apiType = ['primary_handover', 'primary_approve', 'primary_dispatch'].includes(typeFilter)
-        ? OrderType.PRIMARY
-        : (typeFilter ? (typeFilter as OrderType) : undefined);
+      try {
+        const { apiType, listStatus, apiOrderFlow, beatParam, searchParam } = getOrderApiParams();
 
-      const apiStatus = typeFilter === 'primary_handover'
-        ? OrderStatus.CREATED
-        : typeFilter === 'primary_approve'
-          ? OrderStatus.IN_FINANCE
-          : typeFilter === 'primary_dispatch'
-            ? OrderStatus.APPROVED
-            : (statusFilter ? (statusFilter as OrderStatus) : undefined);
+        if (isSO && soTargetRole === 'RETAILER' && selectedRetailerId) {
+          const res = await orderService.getOrdersForRetailer(selectedRetailerId, page, 15, apiType, listStatus);
+          const ordersArr = Array.isArray(res?.orders) ? res.orders : [];
+          return { data: ordersArr, total: res?.total ?? ordersArr.length };
+        }
 
-      const apiOrderFlow = ['primary_handover', 'primary_approve', 'primary_dispatch'].includes(typeFilter)
-        ? 'admin_to_super'
-        : (levelFilter || undefined);
+        const params: any = {
+          page,
+          limit: 15,
+          type: apiType,
+          status: listStatus,
+          state: stateFilter || undefined,
+          beat: beatParam,
+          orderFlow: apiOrderFlow,
+          search: searchParam,
+        };
 
-      if (isSO && soTargetRole === 'RETAILER') {
-        if (!selectedRetailerId) return { data: [], total: 0 };
-        const res = await orderService.getOrdersForRetailer(selectedRetailerId, page, 15, apiType, apiStatus);
-        return { data: res.orders, total: res.total };
+        const res = await orderService.list(params);
+        const rawObj = res as any;
+        const listData = Array.isArray(rawObj?.data)
+          ? rawObj.data
+          : Array.isArray(rawObj?.orders)
+            ? rawObj.orders
+            : Array.isArray(rawObj)
+              ? rawObj
+              : [];
+        const totalCount = rawObj?.total ?? rawObj?.pagination?.total ?? listData.length;
+        return { data: listData, total: totalCount };
+      } catch (err) {
+        console.error('[OrdersScreen] List fetch error:', err);
+        return { data: [], total: 0 };
       }
-
-      const params: any = {
-        page,
-        limit: 15,
-        type: apiType,
-        status: apiStatus,
-        state: stateFilter || undefined,
-        beat: beatFilter || undefined,
-        orderFlow: apiOrderFlow,
-      };
-
-      if (isSO) {
-        params.search = (soTargetRole === 'RETAILER' ? selectedRetailerId : selectedDistributorId) || undefined;
-      } else {
-        params.search = selectedDistributorId || undefined;
-      }
-
-      const res = await orderService.list(params);
-      return { data: res.data, total: res.total };
     },
     enabled: !!user,
-    staleTime: 5 * 60 * 1000,
+    staleTime: 30 * 1000,
+    placeholderData: (previousData) => previousData,
   });
+
+  // Background prefetch next page for 0ms page transitions
+  useEffect(() => {
+    if (ordersData && page * 15 < ordersData.total) {
+      const nextPage = page + 1;
+      const { apiType, listStatus, apiOrderFlow, beatParam, searchParam } = getOrderApiParams();
+      queryClient.prefetchQuery({
+        queryKey: [
+          'orders-list-dashboard-app',
+          nextPage,
+          typeFilter,
+          statusFilter,
+          stateFilter,
+          beatFilter,
+          retailerBeatFilter,
+          levelFilter,
+          soTargetRole,
+          salesUserTargetRole,
+          selectedRetailerId,
+          selectedDistributorId,
+        ],
+        queryFn: async () => {
+          if (isSO && soTargetRole === 'RETAILER' && selectedRetailerId) {
+            const res = await orderService.getOrdersForRetailer(selectedRetailerId, nextPage, 15, apiType, listStatus);
+            const ordersArr = Array.isArray(res?.orders) ? res.orders : [];
+            return { data: ordersArr, total: res?.total ?? ordersArr.length };
+          }
+          const params: any = {
+            page: nextPage,
+            limit: 15,
+            type: apiType,
+            status: listStatus,
+            state: stateFilter || undefined,
+            beat: beatParam,
+            orderFlow: apiOrderFlow,
+            search: searchParam,
+          };
+          const res = await orderService.list(params);
+          const rawObj = res as any;
+          const listData = Array.isArray(rawObj?.data)
+            ? rawObj.data
+            : Array.isArray(rawObj?.orders)
+              ? rawObj.orders
+              : Array.isArray(rawObj)
+                ? rawObj
+                : [];
+          const totalCount = rawObj?.total ?? rawObj?.pagination?.total ?? listData.length;
+          return { data: listData, total: totalCount };
+        },
+        staleTime: 30 * 1000,
+      });
+    }
+  }, [ordersData, page, typeFilter, statusFilter, stateFilter, beatFilter, retailerBeatFilter, levelFilter, soTargetRole, salesUserTargetRole, selectedRetailerId, selectedDistributorId, isSO, queryClient, getOrderApiParams]);
+
+  // Confirmation modal state for order actions
+  const [confirmAction, setConfirmAction] = useState<{
+    open: boolean;
+    orderId: string;
+    actionType?: 'status' | 'adminHandover' | 'financeApprove' | 'financeReject';
+    targetStatus?: OrderStatus;
+    title: string;
+    description: string;
+    confirmLabel: string;
+    cancelLabel: string;
+    variant: 'warning' | 'danger' | 'info';
+  } | null>(null);
 
   // Actions Mutations
   useFocusEffect(
     React.useCallback(() => {
-      // Query caching handles refetching when stale; avoid forced redundant refetching on every focus
-    }, [])
+      refetch();
+    }, [refetch])
   );
+
+  const adminHandoverMutation = useMutation({
+    mutationFn: (orderId: string) => orderService.adminHandoverFinance(orderId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['orders-list-dashboard-app'] });
+      queryClient.invalidateQueries({ queryKey: ['orders-summary-dashboard-app'] });
+      queryClient.invalidateQueries({ queryKey: ['order-details-dashboard-app'] });
+      refetch();
+      refetchSummary();
+      setConfirmAction(null);
+      Alert.alert('Success', 'Order handed over to finance successfully');
+    },
+    onError: (err: any) => {
+      setConfirmAction(null);
+      Alert.alert('Error', err.response?.data?.message || err.message || 'Failed to hand over order to finance');
+    },
+  });
+
+  const financeApproveMutation = useMutation({
+    mutationFn: (orderId: string) => orderService.financeApprove(orderId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['orders-list-dashboard-app'] });
+      queryClient.invalidateQueries({ queryKey: ['orders-summary-dashboard-app'] });
+      queryClient.invalidateQueries({ queryKey: ['order-details-dashboard-app'] });
+      refetch();
+      refetchSummary();
+      setConfirmAction(null);
+      Alert.alert('Success', 'Order approved in finance successfully');
+    },
+    onError: (err: any) => {
+      setConfirmAction(null);
+      Alert.alert('Error', err.response?.data?.message || err.message || 'Failed to approve order in finance');
+    },
+  });
+
+  const financeRejectMutation = useMutation({
+    mutationFn: (orderId: string) => orderService.financeReject(orderId, 'Rejected by finance'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['orders-list-dashboard-app'] });
+      queryClient.invalidateQueries({ queryKey: ['orders-summary-dashboard-app'] });
+      queryClient.invalidateQueries({ queryKey: ['order-details-dashboard-app'] });
+      refetch();
+      refetchSummary();
+      setConfirmAction(null);
+      Alert.alert('Success', 'Order rejected in finance');
+    },
+    onError: (err: any) => {
+      setConfirmAction(null);
+      Alert.alert('Error', err.response?.data?.message || err.message || 'Failed to reject order in finance');
+    },
+  });
+
+  const handleAdminHandover = (id: string) => {
+    setConfirmAction({
+      open: true,
+      orderId: id,
+      actionType: 'adminHandover',
+      title: 'Hand Over to Finance',
+      description: `Hand over stock-in order ${id} to Finance for review and final approval?`,
+      confirmLabel: 'Hand Over',
+      cancelLabel: 'Cancel',
+      variant: 'info',
+    });
+  };
+
+  const handleFinanceApprove = (id: string) => {
+    setConfirmAction({
+      open: true,
+      orderId: id,
+      actionType: 'financeApprove',
+      title: 'Approve in Finance',
+      description: `Approve stock-in order ${id} and move it to the dispatch queue?`,
+      confirmLabel: 'Approve',
+      cancelLabel: 'Cancel',
+      variant: 'info',
+    });
+  };
+
+  const handleFinanceReject = (id: string) => {
+    setConfirmAction({
+      open: true,
+      orderId: id,
+      actionType: 'financeReject',
+      title: 'Reject in Finance',
+      description: `Reject stock-in order ${id} in finance review?`,
+      confirmLabel: 'Reject',
+      cancelLabel: 'Cancel',
+      variant: 'danger',
+    });
+  };
 
   const updateStatusMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: OrderStatus }) =>
@@ -376,18 +687,69 @@ export default function OrdersScreen() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['orders-list-dashboard-app'] });
       queryClient.invalidateQueries({ queryKey: ['orders-summary-dashboard-app'] });
+      queryClient.invalidateQueries({ queryKey: ['retailer-orders'] });
+      queryClient.invalidateQueries({ queryKey: ['so-all-retailer-orders'] });
+      queryClient.invalidateQueries({ queryKey: ['sales-user-distributor-orders'] });
+      queryClient.invalidateQueries({ queryKey: ['order-details-dashboard-app'] });
+      refetch();
+      refetchSummary();
+      setConfirmAction(null);
       Alert.alert('Success', 'Order status updated successfully');
     },
     onError: (err: any) => {
-      Alert.alert('Error', err.message || 'Failed to update order status');
+      setConfirmAction(null);
+      const message =
+        err.response?.data?.message ||
+        err.response?.data?.error ||
+        (typeof err.response?.data === 'string' ? err.response.data : undefined) ||
+        err.message ||
+        'Failed to update order status';
+      const isStockError = typeof message === 'string' && message.toLowerCase().includes('insufficient stock');
+      Alert.alert(isStockError ? 'Insufficient Stock' : 'Error', message);
     },
   });
 
   const handleUpdateStatus = (id: string, status: OrderStatus) => {
-    Alert.alert('Update Status', `Confirm changing status to ${status}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Confirm', onPress: () => updateStatusMutation.mutate({ id, status }) },
-    ]);
+    if (status === OrderStatus.DISPATCHED) {
+      setConfirmAction({
+        open: true,
+        orderId: id,
+        targetStatus: status,
+        title: 'Mark as Dispatched',
+        description: `Confirm that order ${id} has been dispatched and is on its way to the receiver?`,
+        confirmLabel: 'Yes, Dispatch',
+        cancelLabel: 'No, Cancel',
+        variant: 'warning',
+      });
+      return;
+    }
+    if (status === OrderStatus.DELIVERED) {
+      setConfirmAction({
+        open: true,
+        orderId: id,
+        targetStatus: status,
+        title: 'Confirm Delivery',
+        description: `Confirm that you have received order ${id}? This will mark it as Delivered.`,
+        confirmLabel: 'Yes, Deliver',
+        cancelLabel: 'No, Cancel',
+        variant: 'info',
+      });
+      return;
+    }
+    if (status === OrderStatus.CANCELLED) {
+      setConfirmAction({
+        open: true,
+        orderId: id,
+        targetStatus: status,
+        title: 'Cancel Order',
+        description: `Are you sure you want to cancel order ${id}? This action cannot be undone.`,
+        confirmLabel: 'Yes, Cancel Order',
+        cancelLabel: 'No, Keep Order',
+        variant: 'danger',
+      });
+      return;
+    }
+    updateStatusMutation.mutate({ id, status });
   };
 
   const handleOpenVisitModal = async () => {
@@ -463,17 +825,8 @@ export default function OrdersScreen() {
     }
   };
 
-  const orders = isSO && soTargetRole === 'RETAILER'
-    ? (selectedRetailerId ? ordersData?.data ?? [] : [])
-    : (isManager || (isSO && soTargetRole === 'DISTRIBUTOR'))
-      ? (selectedDistributorId ? ordersData?.data ?? [] : [])
-      : (ordersData?.data ?? []);
-
-  const total = isSO && soTargetRole === 'RETAILER'
-    ? (selectedRetailerId ? ordersData?.total ?? 0 : 0)
-    : (isManager || (isSO && soTargetRole === 'DISTRIBUTOR'))
-      ? (selectedDistributorId ? ordersData?.total ?? 0 : 0)
-      : (ordersData?.total ?? 0);
+  const orders: IOrder[] = ordersData?.data ?? [];
+  const total = ordersData?.total ?? 0;
 
   const totalPages = Math.max(1, Math.ceil(total / 15));
 
@@ -485,41 +838,91 @@ export default function OrdersScreen() {
     setSelectedRetailerId('');
     setSelectedDistributorId('');
     setRetailerBeatFilter('');
+    setBeatSearchQuery('');
     setRetailerSearchQuery('');
     setPage(1);
+    if (user?.entityId) {
+      void AsyncStorage.removeItem(`orders_retailer_beat_filter_${user.entityId}`);
+    }
   };
 
   const filteredDistributors = useMemo(() => {
     const q = distributorSearchQuery.trim().toLowerCase();
-    if (!q) return distributors;
-    return distributors.filter(
+    if (!q) return activeSalesUserEntities;
+    return activeSalesUserEntities.filter(
       (d) =>
         (d.name || '').toLowerCase().includes(q) ||
         (d.entityId || '').toLowerCase().includes(q) ||
         (d.phone || '').toLowerCase().includes(q)
     );
-  }, [distributors, distributorSearchQuery]);
+  }, [activeSalesUserEntities, distributorSearchQuery]);
 
   return (
     <View className="flex-1 bg-gray-50">
       {/* Header */}
-      <View className="px-4 py-3 border-b border-gray-150 bg-white flex-row items-center gap-3">
-        <View className="w-10 h-10 bg-orange-50 rounded-xl items-center justify-center border border-orange-100">
-          <Ionicons name="cart-outline" size={22} color="#f97316" />
+      <View className="px-4 py-3 border-b border-gray-150 bg-white flex-row items-center justify-between">
+        <View className="flex-row items-center gap-3 flex-1 mr-2">
+          <View className="w-10 h-10 bg-orange-50 rounded-xl items-center justify-center border border-orange-100">
+            <Ionicons name="cart-outline" size={22} color="#f97316" />
+          </View>
+          <View className="flex-1">
+            <Text className="text-lg font-bold text-gray-800">Orders</Text>
+            <Text className="text-xs text-gray-400 mt-0.5">
+              {isAdmin && 'All orders across the network'}
+              {isFinance && 'Finance review and approval queue'}
+              {isDispatch && 'Dispatch execution queue'}
+              {isRSM && 'Orders in your region'}
+              {isASM && 'Orders in your area'}
+              {isSS && 'Primary orders from distributors'}
+              {isDist && 'Primary and secondary order management'}
+              {isSO && 'Orders you have booked for retailers'}
+              {isRetailer && 'Your order history'}
+            </Text>
+          </View>
         </View>
-        <View className="flex-1">
-          <Text className="text-lg font-bold text-gray-800">Orders</Text>
-          <Text className="text-xs text-gray-400 mt-0.5">
-            {isAdmin && 'All orders across the network'}
-            {isFinance && 'Finance review and approval queue'}
-            {isDispatch && 'Dispatch execution queue'}
-            {isRSM && 'Orders in your region'}
-            {isASM && 'Orders in your area'}
-            {isSS && 'Primary orders from distributors'}
-            {isDist && 'Primary and secondary order management'}
-            {isSO && 'Orders you have booked for retailers'}
-            {isRetailer && 'Your order history'}
-          </Text>
+
+        {/* Quick Header Action Buttons */}
+        <View className="flex-row items-center gap-2">
+          {(isManager || isSO || isAdmin) && (
+            <TouchableOpacity
+              onPress={handleExport}
+              disabled={isExporting}
+              className="bg-white border border-gray-200 px-3 py-1.5 rounded-xl flex-row items-center gap-1 shadow-sm"
+            >
+              {isExporting ? (
+                <ActivityIndicator size="small" color="#f97316" />
+              ) : (
+                <Ionicons name="download-outline" size={14} color="#f97316" />
+              )}
+              <Text className="text-gray-700 text-xs font-bold">
+                {isExporting ? 'Exporting...' : 'Export'}
+              </Text>
+            </TouchableOpacity>
+          )}
+          {isSS && (
+            <TouchableOpacity
+              onPress={() => router.push('/orders/new/primary' as any)}
+              className="bg-[#f97316] px-3 py-1.5 rounded-xl flex-row items-center gap-1"
+            >
+              <Text className="text-white text-xs font-bold">+ New Stock-In</Text>
+            </TouchableOpacity>
+          )}
+          {isDist && (
+            <TouchableOpacity
+              onPress={() => router.push('/orders/new/primary' as any)}
+              className="bg-[#f97316] px-3 py-1.5 rounded-xl flex-row items-center gap-1"
+            >
+              <Text className="text-white text-xs font-bold">+ New Primary Order</Text>
+            </TouchableOpacity>
+          )}
+          {isRetailer && !retailerHasAuthorizedSo && (
+            <TouchableOpacity
+              onPress={() => router.push('/orders/new/secondary' as any)}
+              className="bg-[#f97316] px-3 py-1.5 rounded-xl flex-row items-center gap-1"
+            >
+              <Text className="text-white text-xs font-bold">+ New Order</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -594,6 +997,19 @@ export default function OrdersScreen() {
                           : 'Search retailer by name or ID...'}
                       </Text>
                     </View>
+                    {selectedRetailer && todayCallStatusMap[selectedRetailer.entityId || selectedRetailer.retailerId] ? (
+                      <View className={`px-1.5 py-0.5 rounded border mr-1.5 ${todayCallStatusMap[selectedRetailer.entityId || selectedRetailer.retailerId] === 'PC'
+                        ? 'bg-emerald-50 border-emerald-200'
+                        : 'bg-blue-50 border-blue-200'
+                        }`}>
+                        <Text className={`text-[10px] font-bold ${todayCallStatusMap[selectedRetailer.entityId || selectedRetailer.retailerId] === 'PC'
+                          ? 'text-emerald-700'
+                          : 'text-blue-700'
+                          }`}>
+                          {todayCallStatusMap[selectedRetailer.entityId || selectedRetailer.retailerId]}
+                        </Text>
+                      </View>
+                    ) : null}
                     <Ionicons name="chevron-down" size={14} color="#6b7280" />
                   </TouchableOpacity>
                 </View>
@@ -668,10 +1084,23 @@ export default function OrdersScreen() {
 
               {/* Active selection badge */}
               {soTargetRole === 'RETAILER' && selectedRetailer ? (
-                <View className="bg-orange-50 border border-orange-100 px-3 py-1.5 rounded-xl mt-1">
+                <View className="bg-orange-50 border border-orange-100 px-3 py-1.5 rounded-xl mt-1 flex-row items-center justify-between">
                   <Text className="text-xs font-semibold text-[#f97316]" numberOfLines={1}>
                     Viewing orders for: {selectedRetailer.name}
                   </Text>
+                  {todayCallStatusMap[selectedRetailer.entityId || selectedRetailer.retailerId] && (
+                    <View className={`px-1.5 py-0.5 rounded border ${todayCallStatusMap[selectedRetailer.entityId || selectedRetailer.retailerId] === 'PC'
+                      ? 'bg-emerald-50 border-emerald-200'
+                      : 'bg-blue-50 border-blue-200'
+                      }`}>
+                      <Text className={`text-[10px] font-bold ${todayCallStatusMap[selectedRetailer.entityId || selectedRetailer.retailerId] === 'PC'
+                        ? 'text-emerald-700'
+                        : 'text-blue-700'
+                        }`}>
+                        {todayCallStatusMap[selectedRetailer.entityId || selectedRetailer.retailerId]}
+                      </Text>
+                    </View>
+                  )}
                 </View>
               ) : soTargetRole === 'DISTRIBUTOR' && selectedDistributor ? (
                 <View className="bg-orange-50 border border-orange-100 px-3 py-1.5 rounded-xl mt-1">
@@ -684,104 +1113,160 @@ export default function OrdersScreen() {
           </View>
         )}
 
-        {/* SELECT DISTRIBUTOR Search Box for RSM/ASM Managers */}
+        {/* Target Selector & Search Box for RSM/ASM Managers */}
         {isManager && (
-          <View className="px-6 pt-4" style={{ zIndex: 50 }}>
-            <View className="bg-white border border-gray-150 rounded-2xl p-4 shadow-sm relative">
-              <Text className="text-[10px] font-bold text-slate-400 uppercase mb-2">Select Distributor</Text>
-              <View className="flex-row items-center border border-gray-200 rounded-xl px-2.5 bg-white">
-                <Ionicons name="search-outline" size={16} color="#9ca3af" className="mr-1.5" />
-                <TextInput
-                  placeholder="Search distributor by name, ID, or phone..."
-                  placeholderTextColor="#9ca3af"
-                  value={distributorSearchQuery}
-                  onChangeText={(text) => {
-                    setDistributorSearchQuery(text);
-                    setIsSearchingDistributor(true);
-                  }}
-                  onFocus={() => setIsSearchingDistributor(true)}
-                  className="flex-1 text-xs text-gray-850 p-0 h-9"
-                />
-                {!!distributorSearchQuery && (
+          <View className="px-6 pt-5" style={{ zIndex: 50 }}>
+            <View className="bg-white border border-gray-200 p-4 rounded-2xl shadow-sm gap-3 relative">
+              {/* Toggle Buttons + View Performance */}
+              <View className="flex-row items-center justify-between">
+                <View className="flex-row bg-gray-50 border border-gray-100 p-0.5 rounded-lg flex-1 mr-3">
                   <TouchableOpacity
                     onPress={() => {
+                      setSalesUserTargetRole('SUPER_STOCKIST');
                       setSelectedDistributorId('');
                       setDistributorSearchQuery('');
-                      setIsSearchingDistributor(false);
                       setPage(1);
                     }}
+                    className={`flex-1 py-2 items-center rounded-md ${salesUserTargetRole === 'SUPER_STOCKIST' ? 'bg-[#f97316]' : 'bg-transparent'
+                      }`}
                   >
-                    <Ionicons name="close-circle" size={16} color="#64748b" />
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              {selectedDistributorId ? (
-                <View className="flex-row items-center justify-between mt-3">
-                  <View className="bg-orange-50 border border-orange-100 px-3 py-1.5 rounded-full">
-                    <Text className="text-xs font-semibold text-[#f97316]">
-                      Viewing orders for: {distributorSearchQuery}
+                    <Text className={`text-xs font-bold ${salesUserTargetRole === 'SUPER_STOCKIST' ? 'text-white' : 'text-gray-600'}`}>
+                      Super Stockist
                     </Text>
-                  </View>
+                  </TouchableOpacity>
                   <TouchableOpacity
-                    onPress={() =>
-                      router.push({
-                        pathname: '/orders/new/sales-user',
-                        params: {
-                          distributorId: selectedDistributorId,
-                          distributorName: distributorSearchQuery,
-                        },
-                      } as any)
-                    }
-                    className="bg-orange-500 px-4 py-2 rounded-xl flex-row items-center justify-center"
+                    onPress={() => {
+                      setSalesUserTargetRole('DISTRIBUTOR');
+                      setSelectedDistributorId('');
+                      setDistributorSearchQuery('');
+                      setPage(1);
+                    }}
+                    className={`flex-1 py-2 items-center rounded-md ${salesUserTargetRole === 'DISTRIBUTOR' ? 'bg-[#f97316]' : 'bg-transparent'
+                      }`}
                   >
-                    <Text className="text-white text-xs font-bold">+ New Order</Text>
+                    <Text className={`text-xs font-bold ${salesUserTargetRole === 'DISTRIBUTOR' ? 'text-white' : 'text-gray-600'}`}>
+                      Distributor
+                    </Text>
                   </TouchableOpacity>
                 </View>
-              ) : null}
 
-              {/* Autocomplete Suggestions */}
-              {isSearchingDistributor && filteredDistributors.length > 0 && !selectedDistributorId && (
-                <View className="absolute top-[76px] left-4 right-4 bg-white border border-gray-200 rounded-xl shadow-lg z-50 max-h-60 overflow-hidden">
-                  <ScrollView nestedScrollEnabled={true}>
-                    {filteredDistributors.map((d) => (
+                <TouchableOpacity
+                  onPress={() => router.push('/performance' as any)}
+                  className="flex-row items-center gap-1.5 border border-gray-200 bg-gray-50 px-3 py-2 rounded-full"
+                >
+                  <Ionicons name="bar-chart-outline" size={14} color="#475569" />
+                  <Text className="text-xs font-semibold text-slate-700">View Performance</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Search Box Header & Input */}
+              <View className="gap-1.5 mt-1">
+                <Text className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
+                  SELECT {salesUserTargetRole === 'SUPER_STOCKIST' ? 'SUPER STOCKIST' : 'DISTRIBUTOR'}
+                </Text>
+                <View className="flex-row items-center border border-gray-200 rounded-xl px-2.5 bg-white">
+                  <Ionicons name="search-outline" size={16} color="#9ca3af" className="mr-1.5" />
+                  <TextInput
+                    placeholder={
+                      salesUserTargetRole === 'SUPER_STOCKIST'
+                        ? 'Search super stockist by name, ID, or phone...'
+                        : 'Search distributor by name, ID, or phone...'
+                    }
+                    placeholderTextColor="#9ca3af"
+                    value={distributorSearchQuery}
+                    onChangeText={(text) => {
+                      if (selectedDistributorId) {
+                        setSelectedDistributorId('');
+                      }
+                      setDistributorSearchQuery(text);
+                      setIsSearchingDistributor(true);
+                      setPage(1);
+                    }}
+                    onFocus={() => setIsSearchingDistributor(true)}
+                    className="flex-1 text-xs text-gray-850 p-0 h-9"
+                  />
+                  {!!distributorSearchQuery && (
+                    <TouchableOpacity
+                      onPress={() => {
+                        setSelectedDistributorId('');
+                        setDistributorSearchQuery('');
+                        setIsSearchingDistributor(false);
+                        setPage(1);
+                      }}
+                    >
+                      <Ionicons name="close-circle" size={16} color="#64748b" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {selectedDistributorId ? (
+                  <View className="flex-row items-center justify-between mt-2">
+                    <View className="bg-orange-50 border border-orange-100 px-3 py-1.5 rounded-full flex-row items-center gap-1.5">
+                      <Text className="text-xs font-semibold text-[#f97316]">
+                        Viewing orders for: {selectedDistributor?.name || distributorSearchQuery}
+                      </Text>
                       <TouchableOpacity
-                        key={d.entityId}
                         onPress={() => {
-                          setSelectedDistributorId(d.entityId);
-                          setDistributorSearchQuery(d.name);
+                          setSelectedDistributorId('');
+                          setDistributorSearchQuery('');
                           setIsSearchingDistributor(false);
                           setPage(1);
                         }}
-                        className="py-2.5 px-3 border-b border-gray-50 flex-row justify-between items-center bg-white"
+                        className="p-0.5"
                       >
-                        <View className="flex-1 mr-2">
-                          <Text className="text-xs font-bold text-slate-800">{d.name}</Text>
-                          <Text className="text-[10px] text-slate-400 mt-0.5">{d.phone}</Text>
-                        </View>
-                        <Text className="text-[10px] font-medium text-slate-400">{d.entityId}</Text>
+                        <Ionicons name="close-circle" size={14} color="#f97316" />
                       </TouchableOpacity>
-                    ))}
-                  </ScrollView>
-                </View>
-              )}
+                    </View>
+                    <TouchableOpacity
+                      onPress={() =>
+                        router.push({
+                          pathname: '/orders/new/sales-user',
+                          params: {
+                            distributorId: selectedDistributorId,
+                            distributorName: selectedDistributor?.name || distributorSearchQuery,
+                            targetRole: salesUserTargetRole,
+                          },
+                        } as any)
+                      }
+                      className="bg-orange-500 px-4 py-2 rounded-xl flex-row items-center justify-center"
+                    >
+                      <Text className="text-white text-xs font-bold">+ New Order</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+
+                {/* Autocomplete Suggestions */}
+                {isSearchingDistributor && filteredDistributors.length > 0 && !selectedDistributorId && (
+                  <View className="absolute top-[70px] left-0 right-0 bg-white border border-gray-200 rounded-xl shadow-lg z-50 max-h-60 overflow-hidden">
+                    <ScrollView nestedScrollEnabled={true}>
+                      {filteredDistributors.map((d) => (
+                        <TouchableOpacity
+                          key={d.entityId}
+                          onPress={() => {
+                            setSelectedDistributorId(d.entityId);
+                            setDistributorSearchQuery(d.name);
+                            setIsSearchingDistributor(false);
+                            setPage(1);
+                          }}
+                          className="py-2.5 px-3 border-b border-gray-50 flex-row justify-between items-center bg-white"
+                        >
+                          <View className="flex-1 mr-2">
+                            <Text className="text-xs font-bold text-slate-800">{d.name}</Text>
+                            <Text className="text-[10px] text-slate-400 mt-0.5">{d.phone}</Text>
+                          </View>
+                          <Text className="text-[10px] font-medium text-slate-400">{d.entityId}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+              </View>
             </View>
           </View>
         )}
 
-        {/* New Stock-In Button */}
-        {isSS && (
-          <View className="px-6 pt-3 pb-2">
-            <TouchableOpacity
-              onPress={() => router.push('/orders/new/primary' as any)}
-              className="flex-row items-center justify-center bg-orange-500 rounded-xl py-2 px-4 self-start gap-2"
-            >
-              <Text className="text-white text-xs font-bold">+ New Stock-In</Text>
-            </TouchableOpacity>
-          </View>
-        )}
 
-        {/* Stat Cards Stack */}
+        {/* Stat Cards Stack (5 Cards: TOTAL, CREATED, IN FINANCE, DISPATCHED, DELIVERED) */}
         <View className="px-6 pt-4 gap-3">
           <View className="flex-row gap-3">
             <View className="flex-1 bg-white border border-gray-150 rounded-2xl p-4 shadow-sm">
@@ -813,11 +1298,15 @@ export default function OrdersScreen() {
             </View>
           </View>
 
-          <View className="bg-white border border-gray-150 rounded-2xl p-4 shadow-sm">
-            <Text className="text-[10px] font-bold text-slate-400 uppercase">Delivered</Text>
-            <Text className="text-xl font-black text-slate-800 mt-2">
-              {summaryLoading ? '...' : (summaryData?.DELIVERED ?? 0)}
-            </Text>
+          <View className="flex-row gap-3">
+            <View className="w-1/2 pr-1.5">
+              <View className="bg-white border border-gray-150 rounded-2xl p-4 shadow-sm">
+                <Text className="text-[10px] font-bold text-slate-400 uppercase">Delivered</Text>
+                <Text className="text-xl font-black text-slate-800 mt-2">
+                  {summaryLoading ? '...' : (summaryData?.DELIVERED ?? 0)}
+                </Text>
+              </View>
+            </View>
           </View>
         </View>
 
@@ -895,24 +1384,22 @@ export default function OrdersScreen() {
             )}
 
             {/* Export & Reset Row */}
-            {!isASM && (
-              <View className="flex-row gap-3 pt-1">
-                <TouchableOpacity
-                  onPress={handleExport}
-                  disabled={isExporting}
-                  className="flex-1 flex-row items-center justify-center border border-gray-200 bg-white rounded-xl py-3 gap-2 shadow-sm"
-                >
-                  {isExporting ? (
-                    <ActivityIndicator size="small" color="#f97316" />
-                  ) : (
-                    <Ionicons name="download-outline" size={16} color="#f97316" />
-                  )}
-                  <Text className="text-xs font-bold text-gray-700">
-                    {isExporting ? 'Exporting...' : 'Export'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
+            <View className="flex-row gap-3 pt-1">
+              <TouchableOpacity
+                onPress={handleExport}
+                disabled={isExporting}
+                className="flex-1 flex-row items-center justify-center border border-gray-200 bg-white rounded-xl py-3 gap-2 shadow-sm"
+              >
+                {isExporting ? (
+                  <ActivityIndicator size="small" color="#f97316" />
+                ) : (
+                  <Ionicons name="download-outline" size={16} color="#f97316" />
+                )}
+                <Text className="text-xs font-bold text-gray-700">
+                  {isExporting ? 'Exporting...' : 'Export'}
+                </Text>
+              </TouchableOpacity>
+            </View>
 
             {/* Clear Filters option */}
             {(!!typeFilter || !!statusFilter || !!stateFilter || !!beatFilter || !!levelFilter || !!selectedRetailerId || !!selectedDistributorId) && (
@@ -931,27 +1418,7 @@ export default function OrdersScreen() {
           <Text className="text-sm font-bold text-slate-400 uppercase tracking-wider">Order List</Text>
         </View>
 
-        {isSO && soTargetRole === 'RETAILER' && !selectedRetailerId ? (
-          <View className="mx-6 my-6 bg-white border border-dashed border-gray-300 p-8 rounded-2xl items-center justify-center shadow-sm">
-            <Ionicons name="business-outline" size={40} color="#9ca3af" className="opacity-60" />
-            <Text className="text-sm font-bold text-gray-800 mt-3 text-center">
-              Select a retailer to view and manage their orders
-            </Text>
-            <Text className="text-xs text-gray-400 mt-1 text-center">
-              Use the dropdown above to continue.
-            </Text>
-          </View>
-        ) : (isManager || (isSO && soTargetRole === 'DISTRIBUTOR')) && !selectedDistributorId ? (
-          <View className="mx-6 my-6 bg-white border border-dashed border-gray-300 p-8 rounded-2xl items-center justify-center shadow-sm">
-            <Ionicons name="business-outline" size={40} color="#9ca3af" className="opacity-60" />
-            <Text className="text-sm font-bold text-gray-800 mt-3 text-center">
-              Select a distributor to view and manage their orders
-            </Text>
-            <Text className="text-xs text-gray-400 mt-1 text-center">
-              Use the search box above to find connected distributors.
-            </Text>
-          </View>
-        ) : isLoading ? (
+        {isLoading ? (
           <ActivityIndicator size="large" color="#f97316" className="my-12" />
         ) : isError ? (
           <View className="mx-6 bg-white border border-red-150 p-8 rounded-2xl items-center justify-center shadow-sm">
@@ -965,15 +1432,20 @@ export default function OrdersScreen() {
           </View>
         ) : (
           <View className="px-6 gap-4 mb-24">
-            {orders.map((order) => {
+            {orders.map((order: IOrder) => {
               const statusCfg = STATUS_CONFIG[order.status] ?? {
                 label: order.status,
                 bg: 'bg-gray-50',
                 text: 'text-gray-650',
               };
 
+              const isStockInOrder = (order.type === OrderType.PRIMARY || order.type === OrderType.PRIMARY_HANDOVER) && order.fromEntityId === order.toEntityId;
+              const canAdminHandover = isAdmin && order.status === OrderStatus.CREATED && (isStockInOrder || order.type === OrderType.PRIMARY_HANDOVER);
+              const canFinanceApprove = isFinance && order.status === OrderStatus.IN_FINANCE && (isStockInOrder || order.type === OrderType.PRIMARY_HANDOVER);
+              const canFinanceReject = isFinance && order.status === OrderStatus.IN_FINANCE && (isStockInOrder || order.type === OrderType.PRIMARY_HANDOVER);
+              const canApprove = canApproveOrder(order, user?.role, user?.entityId);
               const canDispatch = canDispatchOrder(order, user?.role, user?.entityId, soTargetRole);
-              const canDeliver = canDeliverOrder(order, user?.role, user?.entityId);
+              const canDeliver = canDeliverOrder(order, user?.role, user?.entityId, soTargetRole);
               const canCancel = canCancelOrder(order, user?.role, user?.entityId);
 
               return (
@@ -1001,12 +1473,26 @@ export default function OrdersScreen() {
                   {/* Badges and Price row */}
                   <View className="flex-row justify-between items-center border-t border-gray-100 pt-3">
                     <View className="flex-row items-center gap-1.5">
-                      <View className="bg-[#fff7ed] px-2 py-0.5 rounded-full border border-orange-100">
-                        <Text className="text-[10px] font-bold text-[#f97316] uppercase">
+                      <View className={`px-2 py-0.5 rounded-full border ${order.type === OrderType.PRIMARY ? 'bg-violet-50 border-violet-100' : 'bg-orange-50 border-orange-100'}`}>
+                        <Text className={`text-[10px] font-bold uppercase ${order.type === OrderType.PRIMARY ? 'text-violet-700' : 'text-orange-700'}`}>
                           {order.type === OrderType.PRIMARY ? 'Primary' : order.type === OrderType.PRIMARY_HANDOVER ? 'Primary Handover' : 'Secondary'}
                         </Text>
                       </View>
                       <LocationBadge activity={order.orderActivity} />
+                      {(() => {
+                        const rId = order.fromEntityId || order.onBehalfOfEntityId || order.onBehalfOf;
+                        const callStatus = rId ? todayCallStatusMap[rId] : undefined;
+                        if (!callStatus) return null;
+                        return (
+                          <View className={`px-1.5 py-0.5 rounded border ${callStatus === 'PC' ? 'bg-emerald-50 border-emerald-200' : 'bg-blue-50 border-blue-200'
+                            }`}>
+                            <Text className={`text-[10px] font-bold ${callStatus === 'PC' ? 'text-emerald-700' : 'text-blue-700'
+                              }`}>
+                              {callStatus}
+                            </Text>
+                          </View>
+                        );
+                      })()}
                       <Text className="text-xs text-slate-400">{order.items?.length || 0} items</Text>
                     </View>
                     <Text className="text-sm font-bold text-slate-800">{formatCurrency(order.totalAmount)}</Text>
@@ -1027,8 +1513,51 @@ export default function OrdersScreen() {
                   </View>
 
                   {/* Quick Action buttons */}
-                  {(canDispatch || canDeliver || canCancel) && (
+                  {(canAdminHandover || canFinanceApprove || canFinanceReject || canApprove || canDispatch || canDeliver || canCancel) && (
                     <View className="flex-row gap-2 mt-3 pt-2 border-t border-gray-100">
+                      {canAdminHandover && (
+                        <TouchableOpacity
+                          disabled={adminHandoverMutation.isPending}
+                          onPress={() => handleAdminHandover(order.orderId)}
+                          className="flex-1 flex-row items-center justify-center border border-emerald-200 bg-emerald-50 rounded-lg py-2 gap-1"
+                        >
+                          <Ionicons name="shield-checkmark-outline" size={14} color="#059669" />
+                          <Text className="text-xs font-semibold text-emerald-700">Hand Over</Text>
+                        </TouchableOpacity>
+                      )}
+
+                      {canFinanceApprove && (
+                        <TouchableOpacity
+                          disabled={financeApproveMutation.isPending}
+                          onPress={() => handleFinanceApprove(order.orderId)}
+                          className="flex-1 flex-row items-center justify-center border border-emerald-200 bg-emerald-50 rounded-lg py-2 gap-1"
+                        >
+                          <Ionicons name="shield-checkmark-outline" size={14} color="#059669" />
+                          <Text className="text-xs font-semibold text-emerald-700">Approve</Text>
+                        </TouchableOpacity>
+                      )}
+
+                      {canFinanceReject && (
+                        <TouchableOpacity
+                          disabled={financeRejectMutation.isPending}
+                          onPress={() => handleFinanceReject(order.orderId)}
+                          className="flex-1 flex-row items-center justify-center border border-red-200 bg-red-50 rounded-lg py-2 gap-1"
+                        >
+                          <Ionicons name="close-circle-outline" size={14} color="#dc2626" />
+                          <Text className="text-xs font-semibold text-red-700">Reject</Text>
+                        </TouchableOpacity>
+                      )}
+
+                      {canApprove && (
+                        <TouchableOpacity
+                          onPress={() => setApproveModalOrderId(order.orderId)}
+                          className="flex-1 flex-row items-center justify-center border border-orange-200 bg-orange-50 rounded-lg py-2 gap-1"
+                        >
+                          <Ionicons name="checkmark-circle-outline" size={14} color="#f97316" />
+                          <Text className="text-xs font-semibold text-orange-700">Approve</Text>
+                        </TouchableOpacity>
+                      )}
+
                       {canDispatch && (
                         <TouchableOpacity
                           onPress={() => handleUpdateStatus(order.orderId, OrderStatus.DISPATCHED)}
@@ -1108,7 +1637,7 @@ export default function OrdersScreen() {
               { value: '', label: 'All Types' },
               { value: OrderType.PRIMARY, label: 'Primary' },
               { value: OrderType.SECONDARY, label: 'Secondary' },
-              ...(isAdmin ? [{ value: 'primary_handover', label: 'Primary Handover' }] : []),
+              ...((isAdmin || isManager) ? [{ value: 'primary_handover', label: 'Primary Handover' }] : []),
               ...(isFinance ? [{ value: 'primary_approve', label: 'Primary Approve' }] : []),
               ...(isDispatch ? [{ value: 'primary_dispatch', label: 'Primary Dispatch' }] : []),
             ].map((item) => (
@@ -1251,34 +1780,6 @@ export default function OrdersScreen() {
                 </TouchableOpacity>
               </View>
 
-              {soBeatOptions.length > 0 && (
-                <View className="border-b border-gray-100 py-2 px-3 bg-gray-50/50">
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} className="flex-row gap-1.5">
-                    <TouchableOpacity
-                      onPress={() => setRetailerBeatFilter('')}
-                      className={`px-2.5 py-1 rounded-full border ${!retailerBeatFilter ? 'bg-[#f97316] border-[#f97316]' : 'bg-white border-gray-200'
-                        }`}
-                    >
-                      <Text className={`text-[11px] font-bold ${!retailerBeatFilter ? 'text-white' : 'text-gray-600'}`}>
-                        All Beats
-                      </Text>
-                    </TouchableOpacity>
-                    {soBeatOptions.map((beat) => (
-                      <TouchableOpacity
-                        key={beat}
-                        onPress={() => setRetailerBeatFilter(beat === retailerBeatFilter ? '' : beat)}
-                        className={`px-2.5 py-1 rounded-full border ${retailerBeatFilter === beat ? 'bg-[#f97316] border-[#f97316]' : 'bg-white border-gray-200'
-                          }`}
-                      >
-                        <Text className={`text-[11px] font-bold ${retailerBeatFilter === beat ? 'text-white' : 'text-gray-600'}`}>
-                          {beat}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </ScrollView>
-                </View>
-              )}
-
               <View className="p-3 border-b border-gray-100 bg-gray-50/50 flex-row items-center gap-2">
                 <Ionicons name="search" size={14} color="#9ca3af" />
                 <TextInput
@@ -1299,11 +1800,13 @@ export default function OrdersScreen() {
                 data={filteredSoRetailers}
                 keyExtractor={(item) => item.entityId || item.retailerId}
                 renderItem={({ item }) => {
-                  const isSelected = selectedRetailerId === item.entityId || selectedRetailerId === item.retailerId;
+                  const rId = item.entityId || item.retailerId;
+                  const isSelected = selectedRetailerId === rId;
+                  const callStatus = todayCallStatusMap[rId];
                   return (
                     <TouchableOpacity
                       onPress={() => {
-                        setSelectedRetailerId(item.entityId || item.retailerId);
+                        setSelectedRetailerId(rId);
                         setPage(1);
                         setShowRetailerModal(false);
                       }}
@@ -1312,13 +1815,22 @@ export default function OrdersScreen() {
                     >
                       <View className="flex-1 mr-2">
                         <Text className={`text-xs ${isSelected ? 'font-bold text-orange-700' : 'text-gray-800'}`}>
-                          {item.name} ({item.entityId})
+                          {item.name} ({rId})
                         </Text>
-                        {item.beat ? (
-                          <Text className="text-[10px] text-gray-400 mt-0.5">Beat: {item.beat}</Text>
-                        ) : null}
                       </View>
-                      {isSelected && <Ionicons name="checkmark" size={18} color="#f97316" />}
+                      <View className="flex-row items-center gap-1.5">
+                        {callStatus === 'PC' && (
+                          <View className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200">
+                            <Text className="text-[10px] font-bold text-emerald-700">PC</Text>
+                          </View>
+                        )}
+                        {callStatus === 'TC' && (
+                          <View className="px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200">
+                            <Text className="text-[10px] font-bold text-blue-700">TC</Text>
+                          </View>
+                        )}
+                        {isSelected && <Ionicons name="checkmark" size={18} color="#f97316" />}
+                      </View>
                     </TouchableOpacity>
                   );
                 }}
@@ -1328,19 +1840,38 @@ export default function OrdersScreen() {
         </Modal>
       )}
 
-      {/* Distributor Selector Modal */}
-      {isSO && (
+      {/* Distributor / Super Stockist Selector Modal */}
+      {(isSO || isManager) && (
         <Modal visible={showDistributorModal} transparent animationType="fade" onRequestClose={() => setShowDistributorModal(false)}>
           <View className="flex-1 bg-black/50 justify-center items-center p-6">
             <View className="bg-white w-full max-w-sm rounded-2xl overflow-hidden shadow-xl max-h-[80%]">
               <View className="p-4 border-b border-gray-150 flex-row justify-between items-center bg-gray-50">
-                <Text className="font-bold text-gray-800 text-base">Select Distributor</Text>
+                <Text className="font-bold text-gray-800 text-base">
+                  {isSO ? 'Select Distributor' : (salesUserTargetRole === 'SUPER_STOCKIST' ? 'Select Super Stockist' : 'Select Distributor')}
+                </Text>
                 <TouchableOpacity onPress={() => setShowDistributorModal(false)} className="p-1">
                   <Ionicons name="close" size={20} color="#374151" />
                 </TouchableOpacity>
               </View>
+
+              <View className="p-3 border-b border-gray-100 bg-gray-50/50 flex-row items-center gap-2">
+                <Ionicons name="search" size={14} color="#9ca3af" />
+                <TextInput
+                  value={distributorSearchQuery}
+                  onChangeText={setDistributorSearchQuery}
+                  placeholder={`Search ${salesUserTargetRole === 'SUPER_STOCKIST' && !isSO ? 'super stockist' : 'distributor'}...`}
+                  placeholderTextColor="#9ca3af"
+                  className="flex-1 text-xs text-gray-800 p-0 py-1"
+                />
+                {!!distributorSearchQuery && (
+                  <TouchableOpacity onPress={() => setDistributorSearchQuery('')} className="p-1">
+                    <Ionicons name="close-circle" size={14} color="#9ca3af" />
+                  </TouchableOpacity>
+                )}
+              </View>
+
               <FlatList
-                data={distributors}
+                data={filteredDistributors}
                 keyExtractor={(item) => item.entityId}
                 renderItem={({ item }) => (
                   <TouchableOpacity
@@ -1352,9 +1883,12 @@ export default function OrdersScreen() {
                     className={`p-4 border-b border-gray-100 flex-row justify-between items-center ${selectedDistributorId === item.entityId ? 'bg-orange-50' : ''
                       }`}
                   >
-                    <Text className={`text-xs ${selectedDistributorId === item.entityId ? 'font-bold text-orange-700' : 'text-gray-700'}`}>
-                      {item.name} ({item.entityId})
-                    </Text>
+                    <View className="flex-1 mr-2">
+                      <Text className={`text-xs ${selectedDistributorId === item.entityId ? 'font-bold text-orange-700' : 'text-gray-700'}`}>
+                        {item.name} ({item.entityId})
+                      </Text>
+                      {item.phone ? <Text className="text-[10px] text-gray-400 mt-0.5">{item.phone}</Text> : null}
+                    </View>
                     {selectedDistributorId === item.entityId && <Ionicons name="checkmark" size={18} color="#f97316" />}
                   </TouchableOpacity>
                 )}
@@ -1414,6 +1948,7 @@ export default function OrdersScreen() {
                         const targetBeat = item === 'All Beats' ? '' : item;
                         if (isSO) {
                           setRetailerBeatFilter(targetBeat);
+                          setBeatSearchQuery(targetBeat);
                         } else {
                           setBeatFilter(targetBeat);
                         }
@@ -1546,8 +2081,8 @@ export default function OrdersScreen() {
                   disabled={visitLoading || !visitPhoto || (!isManualVerify && selectedRetailer?.storeLatitude != null && geofenceDistance > 50)}
                   onPress={handleLogVisit}
                   className={`px-4 py-2.5 rounded-xl flex-row items-center gap-1.5 ${visitLoading || !visitPhoto || (!isManualVerify && selectedRetailer?.storeLatitude != null && geofenceDistance > 50)
-                      ? 'bg-gray-300'
-                      : 'bg-[#f97316]'
+                    ? 'bg-gray-300'
+                    : 'bg-[#f97316]'
                     }`}
                 >
                   {visitLoading && <ActivityIndicator size="small" color="white" />}
@@ -1559,6 +2094,48 @@ export default function OrdersScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Action Confirmation Modal */}
+      {confirmAction && (
+        <ConfirmModal
+          open={confirmAction.open}
+          title={confirmAction.title}
+          description={confirmAction.description}
+          confirmLabel={confirmAction.confirmLabel}
+          cancelLabel={confirmAction.cancelLabel}
+          variant={confirmAction.variant}
+          loading={
+            updateStatusMutation.isPending ||
+            adminHandoverMutation.isPending ||
+            financeApproveMutation.isPending ||
+            financeRejectMutation.isPending
+          }
+          onConfirm={() => {
+            if (confirmAction) {
+              if (confirmAction.actionType === 'adminHandover') {
+                adminHandoverMutation.mutate(confirmAction.orderId);
+              } else if (confirmAction.actionType === 'financeApprove') {
+                financeApproveMutation.mutate(confirmAction.orderId);
+              } else if (confirmAction.actionType === 'financeReject') {
+                financeRejectMutation.mutate(confirmAction.orderId);
+              } else if (confirmAction.targetStatus) {
+                updateStatusMutation.mutate({
+                  id: confirmAction.orderId,
+                  status: confirmAction.targetStatus,
+                });
+              }
+            }
+          }}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
+
+      {/* Approve Order Modal */}
+      <ApproveOrderModal
+        visible={!!approveModalOrderId}
+        orderId={approveModalOrderId}
+        onClose={() => setApproveModalOrderId(null)}
+      />
     </View>
   );
 }

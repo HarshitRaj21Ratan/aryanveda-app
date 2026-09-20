@@ -19,6 +19,8 @@ import { skuService } from '@/services/sku.service';
 import { UserRole } from '@/types';
 import type { ISku } from '@/types';
 
+import AddSkuModal from '@/components/catalog/AddSkuModal';
+
 function formatCurrency(num: number): string {
   if (typeof num !== 'number') return '₹0.00';
   return '₹' + num.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -29,6 +31,7 @@ export default function SkuMasterScreen() {
   const user = useAuthStore((s) => s.user);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [showAddSkuModal, setShowAddSkuModal] = useState(false);
   const limit = 10;
 
   const isAdmin = user?.role === UserRole.ADMIN;
@@ -59,10 +62,14 @@ export default function SkuMasterScreen() {
         search: search || undefined,
         isActive: 'true',
       }),
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 
-  const skus: ISku[] = data?.data ?? [];
-  const total = data?.total ?? 0;
+  const skus: ISku[] = (data?.data ?? []).filter(
+    (sku: any) => sku.enabled !== false && sku.assortmentActive !== false
+  );
+  const total = data?.total ?? skus.length;
   const totalPages = Math.ceil(total / limit);
 
   return (
@@ -74,8 +81,27 @@ export default function SkuMasterScreen() {
           <Text className="text-xs text-gray-500 mt-0.5">{total} products available in your network</Text>
         </View>
 
-        {/* Manage Catalog Button */}
-        {isSS && (
+        {/* Manage Catalog & Add SKU Buttons */}
+        {isAdmin && (
+          <View className="flex-row gap-2 mb-4">
+            <TouchableOpacity
+              onPress={() => setShowAddSkuModal(true)}
+              className="flex-1 bg-orange-500 rounded-lg py-3 flex-row items-center justify-center gap-2 shadow-xs"
+            >
+              <Ionicons name="add-circle-outline" size={18} color="white" />
+              <Text className="text-sm font-bold text-white">+ Add New SKU</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => router.push('/catalog')}
+              className="flex-1 bg-gray-800 rounded-lg py-3 flex-row items-center justify-center gap-2 shadow-xs"
+            >
+              <Ionicons name="book-outline" size={16} color="white" />
+              <Text className="text-sm font-bold text-white">Manage Catalog</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {isSS && !isAdmin && (
           <TouchableOpacity
             onPress={() => router.push('/catalog')}
             className="bg-orange-500 rounded-lg py-3 flex-row items-center justify-center gap-2 mb-4"
@@ -276,6 +302,11 @@ export default function SkuMasterScreen() {
           </TouchableOpacity>
         </View>
       )}
+
+      <AddSkuModal
+        visible={showAddSkuModal}
+        onClose={() => setShowAddSkuModal(false)}
+      />
     </SafeAreaView>
   );
 }

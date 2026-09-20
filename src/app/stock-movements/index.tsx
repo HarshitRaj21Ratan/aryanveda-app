@@ -305,12 +305,16 @@ export default function StockMovementsScreen() {
     queryKey: ['stock-movement-own', days, startDate, endDate],
     queryFn: () => stockMovementService.getOwnMovement(days, startDate || undefined, endDate || undefined),
     enabled: canViewOwn,
+    staleTime: 30 * 1000,
+    placeholderData: (previousData) => previousData,
   });
 
   const { data: downstreamData, isLoading: downstreamLoading, error: downstreamError, isError: isDownstreamError } = useQuery({
     queryKey: ['stock-movement-downstream', days, stateFilter, startDate, endDate],
     queryFn: () => stockMovementService.getDownstreamMovement(days, undefined, stateFilter || undefined, startDate || undefined, endDate || undefined),
     enabled: canViewDownstream,
+    staleTime: 30 * 1000,
+    placeholderData: (previousData) => previousData,
   });
 
   const isLoading = (canViewOwn && ownLoading) || (canViewDownstream && downstreamLoading);

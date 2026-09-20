@@ -20,7 +20,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { useAuthStore } from '@/store/auth.store';
 import { UserRole } from '@/types';
-import { STATE_OPTIONS } from '@/lib/states';
+import { STATE_OPTIONS, getScopedStateOptions } from '@/lib/states';
 import { userService, type UserWithoutPassword } from '@/services/user.service';
 import { retailerTransferService } from '@/services/retailerTransfer.service';
 import { apiClient } from '@/lib/api-client';
@@ -127,8 +127,17 @@ export default function UsersScreen() {
   // Create User States
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [formName, setFormName] = useState('');
+  const scopedFormStateOptions = useMemo(() => {
+    return getScopedStateOptions(user?.state, user?.role);
+  }, [user?.state, user?.role]);
+
+  const defaultFormState = useMemo(() => {
+    if (scopedFormStateOptions.length > 0) return scopedFormStateOptions[0].value;
+    return user?.state?.split(',')[0]?.trim()?.toLowerCase() || '';
+  }, [scopedFormStateOptions, user?.state]);
+
   const [formRole, setFormRole] = useState<UserRole | ''>('');
-  const [formState, setFormState] = useState('');
+  const [formState, setFormState] = useState(defaultFormState);
   const [formEmail, setFormEmail] = useState('');
   const [formPhone, setFormPhone] = useState('');
   const [formPassword, setFormPassword] = useState('');
@@ -186,7 +195,7 @@ export default function UsersScreen() {
       const res = await userService.listAll({
         role: UserRole.DISTRIBUTOR,
         state: formState || undefined,
-        limit: 1000,
+        limit: 10000,
       });
       return res.data ?? [];
     },
@@ -199,7 +208,7 @@ export default function UsersScreen() {
     queryKey: ['sales-agent-candidates', formState],
     queryFn: async () => {
       if (!formState) return [];
-      const res = await userService.listAll({ role: 'so,ase', state: formState || undefined, limit: 1000 });
+      const res = await userService.listAll({ role: 'so,ase', state: formState || undefined, limit: 10000 });
       return res.data ?? [];
     },
     enabled: showCreateModal && !isSO && (formRole === UserRole.RETAILER) && !!formState,
@@ -228,7 +237,7 @@ export default function UsersScreen() {
     queryKey: ['distributor-candidates', editState],
     queryFn: async () => {
       if (!editState) return [];
-      const res = await userService.listDistributors({ state: editState || undefined, limit: 1000 });
+      const res = await userService.listDistributors({ state: editState || undefined, limit: 10000 });
       return res.data ?? [];
     },
     enabled: showEditModal && isEditingRetailer && (user?.role === UserRole.ADMIN || user?.role === UserRole.SO || user?.role === UserRole.ASE),
@@ -240,7 +249,7 @@ export default function UsersScreen() {
     queryKey: ['sales-agent-candidates', editState],
     queryFn: async () => {
       if (!editState) return [];
-      const res = await userService.listAll({ role: 'so,ase', state: editState || undefined, limit: 1000 });
+      const res = await userService.listAll({ role: 'so,ase', state: editState || undefined, limit: 10000 });
       return res.data ?? [];
     },
     enabled: showEditModal && isEditingRetailer && (user?.role === UserRole.ADMIN || user?.role === UserRole.SO || user?.role === UserRole.ASE),
@@ -252,7 +261,7 @@ export default function UsersScreen() {
     queryKey: ['edit-managers-candidates', editParentRoles.join(','), editState],
     queryFn: async () => {
       if (!editState || editParentRoles.length === 0) return [];
-      const res = await userService.listAll({ role: editParentRoles.join(','), state: editState || undefined, limit: 1000 });
+      const res = await userService.listAll({ role: editParentRoles.join(','), state: editState || undefined, limit: 10000 });
       return res.data ?? [];
     },
     enabled: showEditModal && canChangeManager && !!editState,
@@ -319,7 +328,7 @@ export default function UsersScreen() {
   const resetForm = () => {
     setFormName('');
     setFormRole('');
-    setFormState('');
+    setFormState(defaultFormState);
     setFormEmail('');
     setFormPhone('');
     setFormPassword('');
@@ -344,12 +353,16 @@ export default function UsersScreen() {
   }, [showCreateModal]);
 
   useEffect(() => {
-    if (showCreateModal && isSO && user) {
-      setFormRole(UserRole.RETAILER);
-      setFormState(user.state || '');
-      setFormSalesAgentId(user.entityId || '');
+    if (showCreateModal && user) {
+      if (isSO) {
+        setFormRole(UserRole.RETAILER);
+        setFormSalesAgentId(user.entityId || '');
+      }
+      if (!formState || user.state) {
+        setFormState(defaultFormState);
+      }
     }
-  }, [showCreateModal, isSO, user]);
+  }, [showCreateModal, isSO, user, defaultFormState]);
 
   useEffect(() => {
     const fetchBeats = async () => {
@@ -365,6 +378,28 @@ export default function UsersScreen() {
     };
     fetchBeats();
   }, [stateFilter, roleFilter]);
+
+  const { title, fallbackAllowedRoles } = useMemo(() => {
+    if (user?.role === UserRole.ADMIN) {
+      return { title: 'User Management', fallbackAllowedRoles: ALL_ROLES };
+    }
+    if ([UserRole.NSM, UserRole.RSM, UserRole.ASM].includes(user?.role as UserRole)) {
+      return { title: 'My Sales Team', fallbackAllowedRoles: [UserRole.RSM, UserRole.ASM, UserRole.SO, UserRole.ASE, UserRole.DISTRIBUTOR, UserRole.SUPER_STOCKIST] };
+    }
+    if (user?.role === UserRole.SUPER_STOCKIST) {
+      return { title: 'My Distributors', fallbackAllowedRoles: [UserRole.NSM, UserRole.RSM, UserRole.ASM, UserRole.SO, UserRole.ASE, UserRole.DISTRIBUTOR, UserRole.RETAILER] };
+    }
+    if (user?.role === UserRole.DISTRIBUTOR) {
+      return { title: 'My Team', fallbackAllowedRoles: [UserRole.SUPER_STOCKIST, UserRole.RSM, UserRole.NSM] };
+    }
+    if (user?.role === UserRole.SO || user?.role === UserRole.ASE) {
+      return { title: 'My Territories', fallbackAllowedRoles: [UserRole.RETAILER, UserRole.DISTRIBUTOR] };
+    }
+    if (user?.role === UserRole.RETAILER) {
+      return { title: 'Assigned Team', fallbackAllowedRoles: [UserRole.SO, UserRole.ASE] };
+    }
+    return { title: 'Users', fallbackAllowedRoles: [] };
+  }, [user?.role]);
 
   const [isExporting, setIsExporting] = useState(false);
 
@@ -395,15 +430,31 @@ export default function UsersScreen() {
         search: search.trim() || undefined,
         state: stateFilter || undefined,
         beat: beatFilter || undefined,
-        role: roleFilter ? (roleFilter as UserRole) : undefined,
       };
 
-      await exportPaginatedData(
-        userService.listManagement,
-        baseParams,
-        rowMapper,
-        options
-      );
+      if (useSsFallback) {
+        await exportPaginatedData(userService.listDistributors, baseParams, rowMapper, options);
+      } else if (useDistFallback) {
+        await exportPaginatedData(
+          async (p: any) => {
+            const [sos, ret] = await Promise.all([
+              userService.listSOs(p),
+              userService.listRetailers(p)
+            ]);
+            return { data: [...(sos.data || []), ...(ret.data || [])] };
+          },
+          baseParams,
+          rowMapper,
+          options
+        );
+      } else {
+        await exportPaginatedData(
+          userService.listManagement,
+          { ...baseParams, role: roleFilter ? (roleFilter as UserRole) : undefined },
+          rowMapper,
+          options
+        );
+      }
     } catch (err: any) {
       console.error('Export error:', err);
       Alert.alert('Error', err.message || 'Failed to export users data.');
@@ -422,21 +473,90 @@ export default function UsersScreen() {
       return res.data.data;
     },
     enabled: isRetailer,
+    staleTime: 5 * 60 * 1000,
   });
+
+  const limit = 20;
 
   // 2. Staff Management Query
   const { data: managementData, isLoading: managementLoading, isError, refetch } = useQuery({
-    queryKey: ['users-list-app', page, search, roleFilter, stateFilter, beatFilter],
+    queryKey: ['users-list-app', user?.role, page, limit, search, roleFilter, stateFilter, beatFilter],
     queryFn: () =>
       userService.listManagement({
         page,
-        limit: 15,
+        limit,
         search: search.trim() || undefined,
         state: stateFilter || undefined,
         beat: beatFilter || undefined,
         role: roleFilter ? (roleFilter as UserRole) : undefined,
       }),
     enabled: !isRetailer && !!user,
+    staleTime: 60 * 1000,
+    placeholderData: (previousData) => previousData,
+  });
+
+  // Background prefetch next page
+  useEffect(() => {
+    if (managementData && page * limit < (managementData.total ?? 0)) {
+      const nextPage = page + 1;
+      queryClient.prefetchQuery({
+        queryKey: ['users-list-app', user?.role, nextPage, limit, search, roleFilter, stateFilter, beatFilter],
+        queryFn: () =>
+          userService.listManagement({
+            page: nextPage,
+            limit,
+            search: search.trim() || undefined,
+            state: stateFilter || undefined,
+            beat: beatFilter || undefined,
+            role: roleFilter ? (roleFilter as UserRole) : undefined,
+          }),
+        staleTime: 60 * 1000,
+      });
+    }
+  }, [managementData, page, limit, search, roleFilter, stateFilter, beatFilter, user?.role, queryClient]);
+
+  // Fallback queries for Super Stockist and Distributor matching frontend
+  const { data: ssFallback, isLoading: ssFallbackLoading } = useQuery({
+    queryKey: ['users-ss-fallback-app', page, limit, search, stateFilter],
+    queryFn: () =>
+      userService.listDistributors({
+        page,
+        limit,
+        search: search.trim() || undefined,
+        state: stateFilter || undefined,
+      }),
+    enabled: !isRetailer && !!user && user.role === UserRole.SUPER_STOCKIST,
+    staleTime: 60 * 1000,
+    placeholderData: (previousData) => previousData,
+  });
+
+  const { data: distAgentsFallback, isLoading: distAgentsLoading } = useQuery({
+    queryKey: ['users-dist-agents-fallback-app', page, limit, search, stateFilter],
+    queryFn: () =>
+      userService.listSOs({
+        page,
+        limit,
+        search: search.trim() || undefined,
+        state: stateFilter || undefined,
+      }),
+    enabled: !isRetailer && !!user && user.role === UserRole.DISTRIBUTOR,
+    staleTime: 60 * 1000,
+    placeholderData: (previousData) => previousData,
+  });
+
+  const { data: distRetailersFallback, isLoading: distRetailersLoading } = useQuery({
+    queryKey: ['users-dist-retailers-fallback-app', page, limit, search, stateFilter, beatFilter],
+    queryFn: () =>
+      userService.listRetailers({
+        page,
+        limit,
+        search: search.trim() || undefined,
+        state: stateFilter || undefined,
+        beat: beatFilter || undefined,
+      }),
+    enabled: !isRetailer && !!user && user.role === UserRole.DISTRIBUTOR,
+    staleTime: 60 * 1000,
+    placeholderData: (previousData) => previousData,
   });
 
   // Mutations
@@ -698,12 +818,51 @@ export default function UsersScreen() {
   }
 
   // Else: Staff/Admin User Management List
-  const users: UserWithoutPassword[] = managementData?.data ?? [];
-  const total = managementData?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / 15));
+  const primaryUsers = managementData?.data ?? [];
+  const ssFallbackUsers = ssFallback?.data ?? [];
+  const distFallbackUsers = [
+    ...(distAgentsFallback?.data ?? []),
+    ...(distRetailersFallback?.data ?? []),
+  ];
 
-  const allowedRoles = managementData?.meta?.visibleRoles ?? ALL_ROLES;
-  const deactivationRoles = managementData?.meta?.deactivationRoles ?? [];
+  const useSsFallback = isError && user?.role === UserRole.SUPER_STOCKIST;
+  const useDistFallback = isError && user?.role === UserRole.DISTRIBUTOR;
+
+  const rawUsers: UserWithoutPassword[] = useSsFallback
+    ? ssFallbackUsers
+    : useDistFallback
+      ? distFallbackUsers
+      : primaryUsers;
+
+  const users: UserWithoutPassword[] = user?.role === UserRole.DISTRIBUTOR
+    ? rawUsers.filter((u) => [UserRole.SUPER_STOCKIST, UserRole.RSM, UserRole.NSM].includes(u.role as UserRole))
+    : user?.role === UserRole.SUPER_STOCKIST
+      ? rawUsers.filter((u) => [UserRole.DISTRIBUTOR, UserRole.RETAILER].includes(u.role as UserRole))
+      : rawUsers;
+
+  const total = useSsFallback
+    ? (ssFallback?.total ?? users.length)
+    : useDistFallback
+      ? users.length
+      : (managementData?.total ?? users.length);
+
+  const requiresClientPagination = users.length > limit;
+  const paginatedUsers = requiresClientPagination
+    ? users.slice((page - 1) * limit, page * limit)
+    : users;
+  const effectiveTotal = requiresClientPagination ? users.length : total;
+
+  const effectiveLoading = managementLoading || (useSsFallback && ssFallbackLoading) || (useDistFallback && (distAgentsLoading || distRetailersLoading));
+  const effectiveError = isError && !useSsFallback && !useDistFallback;
+  const totalPages = Math.max(1, Math.ceil(effectiveTotal / limit));
+
+  const allowedRoles = user?.role === UserRole.DISTRIBUTOR
+    ? (managementData?.meta?.visibleRoles ?? fallbackAllowedRoles).filter((r) =>
+      [UserRole.SUPER_STOCKIST, UserRole.RSM, UserRole.NSM].includes(r as UserRole)
+    )
+    : (managementData?.meta?.visibleRoles ?? fallbackAllowedRoles);
+  const deactivationRoles = managementData?.meta?.deactivationRoles ?? (user?.role === UserRole.SUPER_STOCKIST ? [UserRole.DISTRIBUTOR] : []);
+  const showBeatFilter = roleFilter === UserRole.RETAILER || (!roleFilter && [UserRole.ADMIN, UserRole.SO, UserRole.ASE, UserRole.DISTRIBUTOR, UserRole.SUPER_STOCKIST, UserRole.NSM, UserRole.RSM, UserRole.ASM].includes(user?.role as UserRole));
   const sidebarItems = [
     { name: 'BP Transfer', icon: 'swap-horizontal-outline' as const, route: '/admin/transfer-business-partner' },
     { name: 'Territories', icon: 'location-outline' as const, route: '/admin/geofence' },
@@ -719,7 +878,6 @@ export default function UsersScreen() {
     { name: 'Summary', icon: 'grid-outline' as const, route: '/admin/summary' },
     { name: 'Admin Inventory', icon: 'archive-outline' as const, route: '/admin/inventory' },
     { name: 'Announcements', icon: 'megaphone-outline' as const, route: '/announcement' },
-    // { name: 'Role Permissions', icon: 'shield-checkmark-outline' as const, route: '/admin/role-permissions' },
   ];
 
   const formatDate = (dateStr: string): string => {
@@ -762,7 +920,7 @@ export default function UsersScreen() {
           </TouchableOpacity>
 
           {/* Beat Input */}
-          {(!roleFilter || roleFilter === UserRole.RETAILER) && (
+          {showBeatFilter && (
             <View className="gap-2">
               <View className="border border-gray-200 rounded-xl px-4 py-3 bg-white flex-row items-center">
                 <TextInput
@@ -797,8 +955,8 @@ export default function UsersScreen() {
                             setPage(1);
                           }}
                           className={`px-3 py-1 rounded-full border mr-2 ${beatFilter === beat
-                              ? 'bg-orange-50 border-orange-200'
-                              : 'bg-white border-gray-250'
+                            ? 'bg-orange-50 border-orange-200'
+                            : 'bg-white border-gray-250'
                             }`}
                         >
                           <Text
@@ -833,26 +991,30 @@ export default function UsersScreen() {
             </Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            onPress={() => setShowCreateModal(true)}
-            className="w-full flex-row items-center justify-center bg-[#f97316] rounded-xl py-3 gap-1.5"
-          >
-            <Ionicons name="add" size={18} color="#ffffff" />
-            <Text className="text-white text-sm font-bold">Create User</Text>
-          </TouchableOpacity>
+          {(user?.role === UserRole.ADMIN || user?.role === UserRole.SO || user?.role === UserRole.ASE) && (
+            <TouchableOpacity
+              onPress={() => setShowCreateModal(true)}
+              className="w-full flex-row items-center justify-center bg-[#f97316] rounded-xl py-3 gap-1.5"
+            >
+              <Ionicons name="add" size={18} color="#ffffff" />
+              <Text className="text-white text-sm font-bold">
+                {user?.role === UserRole.ADMIN ? 'Create User' : 'Add Retailer'}
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         {/* Users list content */}
         <View className="px-6 pt-6 pb-24">
           <UserTable
-            title="User Management"
-            subtitle={`${total} users in the system`}
-            users={users}
-            total={total}
+            title={title}
+            subtitle={`${effectiveTotal} user${effectiveTotal !== 1 ? 's' : ''} in the system`}
+            users={paginatedUsers}
+            total={effectiveTotal}
             page={page}
             totalPages={totalPages}
-            isLoading={managementLoading}
-            isError={isError}
+            isLoading={effectiveLoading}
+            isError={effectiveError}
             search={search}
             onSearchChange={(val) => {
               setSearch(val);
@@ -1050,7 +1212,7 @@ export default function UsersScreen() {
                 {showFormStateDropdown && !isSO && (
                   <View className="absolute top-[48px] left-0 right-0 z-[100] bg-white border border-slate-200 rounded-xl shadow-lg max-h-40 overflow-hidden" style={{ zIndex: 100 }}>
                     <ScrollView nestedScrollEnabled={true}>
-                      {STATE_OPTIONS.map((state) => (
+                      {scopedFormStateOptions.map((state) => (
                         <TouchableOpacity
                           key={state.value}
                           onPress={() => {

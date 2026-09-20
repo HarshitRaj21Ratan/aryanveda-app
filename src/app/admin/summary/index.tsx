@@ -26,7 +26,7 @@ import { useAuthStore } from '@/store/auth.store';
 import { UserRole } from '@/types';
 
 const { width } = Dimensions.get('window');
-const TODAY = new Date().toISOString().slice(0, 10);
+const TODAY = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
 function attendanceBadge(status: string): { label: string; bg: string; text: string } {
   switch (status) {
@@ -366,7 +366,7 @@ export default function DailySummaryScreen() {
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
 
-  const { data, isLoading, refetch, isFetching } = useQuery({
+  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ['admin-daily-summary', dateFilter, stateFilter, roleFilter],
     queryFn: () =>
       summaryService.getDailySummary({
@@ -404,9 +404,18 @@ export default function DailySummaryScreen() {
   const stats = useMemo(() => {
     const total = filtered.length;
     const present = filtered.filter((r) => r.attendance?.attendanceStatus === 'present').length;
+    const absent = filtered.filter((r) => r.attendance?.attendanceStatus === 'absent').length;
+    const halfDay = filtered.filter((r) => r.attendance?.attendanceStatus === 'half_day').length;
+    const leave = filtered.filter((r) => r.attendance?.attendanceStatus === 'leave').length;
     const notMarked = filtered.filter((r) => r.attendance === null).length;
-    return { total, present, notMarked };
+    return { total, present, absent, halfDay, leave, notMarked };
   }, [filtered]);
+
+  const errorMessage =
+    (error as { response?: { data?: { message?: string } }; message?: string } | null)?.response
+      ?.data?.message ??
+    (error as Error | null)?.message ??
+    'Failed to load summary data.';
 
   const clearFilters = () => {
     setSearchTerm('');
@@ -548,7 +557,6 @@ export default function DailySummaryScreen() {
 
   // Helper labels
   const getRoleLabel = () => {
-    if (roleFilter === 'nsm') return 'NSM';
     if (roleFilter === 'rsm') return 'RSM';
     if (roleFilter === 'asm') return 'ASM';
     if (roleFilter === 'so') return 'SO';
@@ -681,28 +689,66 @@ export default function DailySummaryScreen() {
           </View>
         </View>
 
-        {/* Stats Chips (Total, Present, Not Marked) */}
-        <View className="px-5 mb-4 flex-row gap-2">
-          <View className="flex-row items-center bg-white border border-gray-200 px-3 py-1 rounded-full">
-            <View className="w-2 h-2 rounded-full bg-orange-500 mr-2" />
-            <Text className="text-xs font-semibold text-gray-600">{stats.total} Total</Text>
+        {/* Stats Chips */}
+        {!isLoading && !isError && (
+          <View className="px-5 mb-4 flex-row flex-wrap gap-2">
+            <View className="flex-row items-center bg-white border border-gray-200 px-3 py-1 rounded-full">
+              <View className="w-2 h-2 rounded-full bg-orange-500 mr-2" />
+              <Text className="text-xs font-semibold text-gray-600">{stats.total} Total</Text>
+            </View>
+            <View className="flex-row items-center bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-full">
+              <View className="w-2 h-2 rounded-full bg-emerald-500 mr-2" />
+              <Text className="text-xs font-semibold text-emerald-700">{stats.present} Present</Text>
+            </View>
+            {stats.absent > 0 && (
+              <View className="flex-row items-center bg-red-50 border border-red-200 px-3 py-1 rounded-full">
+                <View className="w-2 h-2 rounded-full bg-red-500 mr-2" />
+                <Text className="text-xs font-semibold text-red-700">{stats.absent} Absent</Text>
+              </View>
+            )}
+            {stats.halfDay > 0 && (
+              <View className="flex-row items-center bg-amber-50 border border-amber-200 px-3 py-1 rounded-full">
+                <View className="w-2 h-2 rounded-full bg-amber-500 mr-2" />
+                <Text className="text-xs font-semibold text-amber-700">{stats.halfDay} Half Day</Text>
+              </View>
+            )}
+            {stats.leave > 0 && (
+              <View className="flex-row items-center bg-violet-50 border border-violet-200 px-3 py-1 rounded-full">
+                <View className="w-2 h-2 rounded-full bg-violet-500 mr-2" />
+                <Text className="text-xs font-semibold text-violet-700">{stats.leave} Leave</Text>
+              </View>
+            )}
+            {stats.notMarked > 0 && (
+              <View className="flex-row items-center bg-white border border-gray-200 px-3 py-1 rounded-full">
+                <View className="w-2 h-2 rounded-full bg-gray-400 mr-2" />
+                <Text className="text-xs font-semibold text-gray-500">{stats.notMarked} Not Marked</Text>
+              </View>
+            )}
           </View>
-          <View className="flex-row items-center bg-[#10b981]/5 border border-[#10b981]/25 px-3 py-1 rounded-full">
-            <View className="w-2 h-2 rounded-full bg-[#10b981] mr-2" />
-            <Text className="text-xs font-semibold text-emerald-700">{stats.present} Present</Text>
+        )}
+
+        {/* Error state */}
+        {isError && !isLoading && (
+          <View className="mx-5 mb-4 p-4 rounded-xl border border-red-200 bg-red-50">
+            <Text className="font-semibold text-red-700 text-sm">Failed to load summary</Text>
+            <Text className="mt-1 text-xs text-red-600">{errorMessage}</Text>
+            <TouchableOpacity
+              onPress={() => void refetch()}
+              disabled={isFetching}
+              className="mt-3 flex-row items-center justify-center self-start px-3 py-1.5 rounded-lg border border-red-300 bg-white"
+            >
+              <Ionicons name="refresh-outline" size={12} color="#b91c1c" className="mr-1" />
+              <Text className="text-xs font-bold text-red-700">Retry</Text>
+            </TouchableOpacity>
           </View>
-          <View className="flex-row items-center bg-white border border-gray-200 px-3 py-1 rounded-full">
-            <View className="w-2 h-2 rounded-full bg-gray-400 mr-2" />
-            <Text className="text-xs font-semibold text-gray-500">{stats.notMarked} Not Marked</Text>
-          </View>
-        </View>
+        )}
 
         {/* Card List */}
         {isLoading ? (
           <View className="py-20 justify-center items-center">
             <ActivityIndicator size="large" color="#f97316" />
           </View>
-        ) : filtered.length === 0 ? (
+        ) : isError ? null : filtered.length === 0 ? (
           <View className="py-20 justify-center items-center gap-2">
             <Ionicons name="calendar-outline" size={48} color="#9ca3af" className="opacity-50" />
             <Text className="text-sm text-gray-500 font-semibold">No attendance data matching filters</Text>
@@ -775,11 +821,10 @@ export default function DailySummaryScreen() {
             <FlatList
               data={[
                 { value: '', label: 'All Roles' },
-                { value: 'nsm', label: 'NSM' },
-                { value: 'rsm', label: 'RSM' },
-                { value: 'asm', label: 'ASM' },
                 { value: 'so', label: 'SO' },
-                { value: 'ase', label: 'ASE' }
+                { value: 'ase', label: 'ASE' },
+                { value: 'asm', label: 'ASM' },
+                { value: 'rsm', label: 'RSM' }
               ]}
               keyExtractor={(item) => item.value}
               renderItem={({ item }) => (

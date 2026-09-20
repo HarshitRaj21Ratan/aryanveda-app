@@ -12,7 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as XLSX from 'xlsx';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 export type ParsedOrderUploadRow = {
   rowNumber: number;

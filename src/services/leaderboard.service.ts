@@ -47,12 +47,16 @@ export const leaderboardService = {
     period?: LeaderboardPeriod;
     state?: string;
     beat?: string;
+    fromDate?: string;
+    toDate?: string;
     limit?: number;
   }): Promise<LeaderboardResponse> => {
     const query: Record<string, string> = {};
     if (params.period) query.period = params.period;
     if (params.state) query.state = params.state;
     if (params.beat) query.beat = params.beat;
+    if (params.fromDate) query.fromDate = params.fromDate;
+    if (params.toDate) query.toDate = params.toDate;
     if (params.limit) query.limit = String(params.limit);
 
     const res = await apiClient.get<ApiResponse<LeaderboardResponse>>('/dashboard/leaderboard', {

@@ -220,6 +220,7 @@ function RetailerDashboardView() {
   const summary = summaryRes?.summary;
   const recentOrders = recentRes?.data ?? [];
   const inventoryItems = inventoryRes?.data ?? [];
+  const inventoryCount = (inventoryRes as any)?.total ?? inventoryItems.length;
   const mySoAuthorization = mySoAuthRes?.data;
 
   const pendingCount = (summary?.CREATED ?? 0) + (summary?.APPROVED ?? 0);
@@ -318,8 +319,8 @@ function RetailerDashboardView() {
             }}
             disabled={Boolean(mySoAuthorization)}
             className={`flex-1 items-center justify-center rounded-xl py-2.5 border ${mySoAuthorization
-                ? 'border-emerald-200 bg-emerald-50'
-                : 'border-orange-200 bg-orange-500'
+              ? 'border-emerald-200 bg-emerald-50'
+              : 'border-orange-200 bg-orange-500'
               }`}
           >
             <Text className={`text-xs font-bold ${mySoAuthorization ? 'text-emerald-700' : 'text-white'}`}>
@@ -349,7 +350,7 @@ function RetailerDashboardView() {
             <Text className="text-[10px] font-bold text-slate-400 uppercase">Inventory Items</Text>
           </View>
           <Text className="text-xl font-bold text-slate-800">
-            {inventoryLoading ? '...' : inventoryItems.length}
+            {inventoryLoading ? '...' : inventoryCount}
           </Text>
         </View>
       </View>
@@ -465,15 +466,43 @@ function RetailerDashboardView() {
           </View>
         ) : (
           <View className="gap-3">
-            {inventoryItems.map((item, idx) => (
-              <View key={idx} className="flex-row justify-between items-center py-2.5 border-b border-slate-50 last:border-b-0 last:pb-0">
-                <View>
-                  <Text className="text-xs font-bold text-slate-800">{item.skuName || item.skuId}</Text>
-                  <Text className="text-[10px] text-slate-400 mt-1">Threshold: {item.lowStockThreshold}</Text>
+            {inventoryItems.map((item: any, idx: number) => {
+              const threshold = item.lowStockThreshold ?? 0;
+              const isLowStock = typeof item.isLowStock === 'boolean' ? item.isLowStock : item.quantity <= threshold;
+
+              return (
+                <View key={item.entityId ? `${item.entityId}-${item.skuId || idx}` : idx} className="flex-row items-center justify-between py-2.5 border-b border-slate-50 last:border-b-0 last:pb-0">
+                  <View className="flex-1 mr-3">
+                    <Text className="text-xs font-bold text-slate-800" numberOfLines={1}>
+                      {item.skuName || item.skuId}
+                    </Text>
+                    <View className="flex-row items-center gap-3 mt-1">
+                      <Text className="text-[10px] text-slate-500 font-medium">
+                        Qty: <Text className="font-bold text-slate-800">{item.quantity}</Text> pcs
+                      </Text>
+                      <Text className="text-[10px] text-slate-300">•</Text>
+                      <Text className="text-[10px] text-slate-500 font-medium">
+                        Threshold: <Text className="font-bold text-slate-800">{threshold}</Text>
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View className="items-end">
+                    {isLowStock ? (
+                      <View className="flex-row items-center gap-1 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full">
+                        <Ionicons name="warning" size={10} color="#b91c1c" />
+                        <Text className="text-[10px] font-bold text-red-700 uppercase">Low Stock</Text>
+                      </View>
+                    ) : (
+                      <View className="flex-row items-center gap-1 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full">
+                        <Ionicons name="trending-up" size={10} color="#047857" />
+                        <Text className="text-[10px] font-bold text-emerald-700 uppercase">Good</Text>
+                      </View>
+                    )}
+                  </View>
                 </View>
-                <Text className="text-xs font-bold text-slate-800">{item.quantity} pcs</Text>
-              </View>
-            ))}
+              );
+            })}
           </View>
         )}
       </View>
@@ -538,8 +567,8 @@ function DispatchInsightsView({ orders, loading }: { orders: any[]; loading: boo
             key={String(days)}
             onPress={() => setDaysFilter(days as any)}
             className={`px-3 py-1.5 rounded-lg border mr-1.5 ${daysFilter === days
-                ? 'bg-orange-500 border-orange-500'
-                : 'bg-white border-slate-200'
+              ? 'bg-orange-500 border-orange-500'
+              : 'bg-white border-slate-200'
               }`}
           >
             <Text
@@ -556,8 +585,8 @@ function DispatchInsightsView({ orders, loading }: { orders: any[]; loading: boo
             key={status}
             onPress={() => setStatusFilter(status as any)}
             className={`px-3 py-1.5 rounded-lg border mr-1.5 ${statusFilter === status
-                ? 'bg-orange-500 border-orange-500'
-                : 'bg-white border-slate-200'
+              ? 'bg-orange-500 border-orange-500'
+              : 'bg-white border-slate-200'
               }`}
           >
             <Text
@@ -653,8 +682,8 @@ function FinanceInsightsView({ orders, loading }: { orders: any[]; loading: bool
             key={String(days)}
             onPress={() => setDaysFilter(days as any)}
             className={`px-3 py-1.5 rounded-lg border mr-1.5 ${daysFilter === days
-                ? 'bg-indigo-600 border-indigo-600'
-                : 'bg-white border-slate-200'
+              ? 'bg-indigo-600 border-indigo-600'
+              : 'bg-white border-slate-200'
               }`}
           >
             <Text
@@ -671,8 +700,8 @@ function FinanceInsightsView({ orders, loading }: { orders: any[]; loading: bool
             key={status}
             onPress={() => setStatusFilter(status as any)}
             className={`px-3 py-1.5 rounded-lg border mr-1.5 ${statusFilter === status
-                ? 'bg-orange-500 border-orange-500'
-                : 'bg-white border-slate-200'
+              ? 'bg-orange-500 border-orange-500'
+              : 'bg-white border-slate-200'
               }`}
           >
             <Text
@@ -1141,7 +1170,7 @@ function EmployeeDashboardView({ role }: { role: UserRole }) {
             )}
           </View>
         </View>
-      ) : isDispatch || isFinance ? null : (
+      ) : isDispatch || isFinance || isRSM || isASM ? null : (
         d?.roleBreakdown && (
           <View className="border border-gray-150 rounded-xl p-4 bg-white shadow-sm">
             <View className="flex-row justify-between items-center mb-1">

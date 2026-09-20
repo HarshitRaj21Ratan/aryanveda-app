@@ -386,37 +386,72 @@ export function NewCountersModal({
   visible,
   onClose,
   activeSoIds,
+  allSoIds,
   period,
   fromDate,
   toDate,
   stateParam,
   creatorName,
   creatorRoles,
+  type = 'retailer',
 }: {
   visible: boolean;
   onClose: () => void;
   activeSoIds: string[];
+  allSoIds?: string[];
   period: any;
   fromDate?: string;
   toDate?: string;
   stateParam?: string;
   creatorName?: string;
   creatorRoles?: string[];
+  type?: 'retailer' | 'distributor_super';
 }) {
   const [searchQuery, setSearchQuery] = useState('');
 
+  const targetSoIds = React.useMemo(() => {
+    if (activeSoIds && activeSoIds.length > 0) return activeSoIds;
+    if (allSoIds && allSoIds.length > 0) return allSoIds;
+    return [];
+  }, [activeSoIds, allSoIds]);
+
   const { data: newEntities, isLoading } = useQuery({
-    queryKey: ['admin-new-entities-modal', activeSoIds.join(','), period, fromDate, toDate, stateParam],
+    queryKey: ['admin-new-entities-modal', targetSoIds.join(','), period, fromDate, toDate, stateParam, type],
     queryFn: () =>
       visitService.getAdminNewEntities({
-        soEntityId: activeSoIds,
+        soEntityId: targetSoIds,
         period,
         fromDate: fromDate || undefined,
         toDate: toDate || undefined,
         state: stateParam,
       }),
-    enabled: visible && activeSoIds.length > 0,
+    enabled: visible && targetSoIds.length > 0,
   });
+
+  const isDistSuperView = type === 'distributor_super';
+
+  const filteredEntities = React.useMemo(() => {
+    if (!newEntities) return [];
+    let list = newEntities;
+
+    if (type === 'retailer') {
+      list = list.filter((e: any) => e.role === UserRole.RETAILER);
+    } else if (type === 'distributor_super') {
+      list = list.filter((e: any) => e.role === UserRole.DISTRIBUTOR || e.role === UserRole.SUPER_STOCKIST);
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter((e: any) =>
+        (e.name ?? '').toLowerCase().includes(q) ||
+        (e.phone ?? '').toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [newEntities, type, searchQuery]);
+
+  const headerTitle = isDistSuperView ? 'New Distributors/Supers Added' : 'New Counters Added';
+  const emptyText = isDistSuperView ? 'No new distributors/supers found.' : 'No new counters found.';
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -426,7 +461,7 @@ export function NewCountersModal({
             <Ionicons name="arrow-back" size={22} color="#4b5563" />
           </TouchableOpacity>
           <View>
-            <Text className="text-base font-bold text-gray-900">New Counters Added</Text>
+            <Text className="text-base font-bold text-gray-900">{headerTitle}</Text>
             <View className="flex-row items-center gap-1.5 mt-0.5">
               <Text className="text-[10px] text-slate-400 font-semibold">
                 By {creatorName || 'Selected Field Staff'}
@@ -460,10 +495,10 @@ export function NewCountersModal({
           <View className="flex-1 items-center justify-center">
             <ActivityIndicator size="large" color="#f37021" />
           </View>
-        ) : !newEntities || newEntities.length === 0 ? (
+        ) : !filteredEntities || filteredEntities.length === 0 ? (
           <View className="flex-1 items-center justify-center p-6 gap-3">
             <Ionicons name="storefront-outline" size={48} color="#cbd5e1" />
-            <Text className="text-xs text-slate-400 font-semibold">No new counters found.</Text>
+            <Text className="text-xs text-slate-400 font-semibold">{emptyText}</Text>
           </View>
         ) : (
           <ScrollView
@@ -472,27 +507,20 @@ export function NewCountersModal({
             showsVerticalScrollIndicator={true}
           >
             <View className="gap-3.5 mb-16">
-              {newEntities
-                .filter((e: any) => e.role === UserRole.RETAILER)
-                .filter((e: any) => {
-                  if (!searchQuery.trim()) return true;
-                  const q = searchQuery.toLowerCase();
-                  return (
-                    (e.name ?? '').toLowerCase().includes(q) ||
-                    (e.phone ?? '').toLowerCase().includes(q)
-                  );
-                })
-                .map((entity: any, idx: number) => {
-                  const formattedDate = entity.createdAt
-                    ? new Date(entity.createdAt).toLocaleDateString('en-IN', {
-                        day: '2-digit',
-                        month: 'short',
-                        year: 'numeric',
-                      })
-                    : '-';
+              {filteredEntities.map((entity: any, idx: number) => {
+                const formattedDate = entity.createdAt
+                  ? new Date(entity.createdAt).toLocaleDateString('en-IN', {
+                      day: '2-digit',
+                      month: 'short',
+                      year: 'numeric',
+                    })
+                  : '-';
 
-                  return (
-                    <View key={`${entity.entityId}-${idx}`} className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
+                const roleBadgeText = entity.role === UserRole.RETAILER ? 'Counter' : entity.role === UserRole.DISTRIBUTOR ? 'Distributor' : 'Super';
+
+                return (
+                  <View key={`${entity.entityId}-${idx}`} className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
+                    {!isDistSuperView && (
                       <View className="h-32 bg-slate-100 items-center justify-center relative">
                         {entity.storeImageUrl ? (
                           <Image
@@ -504,55 +532,65 @@ export function NewCountersModal({
                           <Ionicons name="storefront-outline" size={40} color="#94a3b8" />
                         )}
                         <View className="absolute top-3.5 right-3.5 bg-white/90 px-2 py-0.5 rounded-full border border-gray-100">
-                          <Text className="text-[8px] font-bold text-slate-500 uppercase">Counter</Text>
+                          <Text className="text-[8px] font-bold text-slate-500 uppercase">{roleBadgeText}</Text>
                         </View>
                       </View>
+                    )}
 
-                      <View className="p-4 gap-2.5">
-                        <View>
-                          <Text className="text-sm font-bold text-slate-800">{entity.name || 'Unnamed Counter'}</Text>
+                    <View className="p-4 gap-2.5">
+                      <View className="flex-row justify-between items-start gap-2">
+                        <View className="flex-1">
+                          <Text className="text-sm font-bold text-slate-800">{entity.name || 'Unnamed Entity'}</Text>
                           <Text className="text-[10px] text-slate-400 font-semibold mt-0.5">ID: {entity.entityId}</Text>
                         </View>
-
-                        <View className="space-y-1.5 pt-2.5 border-t border-gray-100">
-                          {entity.phone ? (
-                            <TouchableOpacity
-                              onPress={() => Linking.openURL(`tel:${entity.phone}`)}
-                              className="flex-row items-center gap-2"
-                            >
-                              <Ionicons name="call-outline" size={12} color="#64748b" />
-                              <Text className="text-xs text-slate-600 font-semibold">{entity.phone}</Text>
-                            </TouchableOpacity>
-                          ) : null}
-
-                          <View className="flex-row items-start gap-2">
-                            <Ionicons name="location-outline" size={12} color="#64748b" className="mt-0.5" />
-                            <Text className="text-xs text-slate-500 flex-1 leading-tight">
-                              {[entity.address, entity.city, entity.state].filter(Boolean).join(', ') || 'No address provided'}
+                        {isDistSuperView && (
+                          <View className="bg-blue-50 border border-blue-100 px-2.5 py-0.5 rounded-full">
+                            <Text className="text-[9px] font-bold text-blue-600">
+                              {entity.role === UserRole.DISTRIBUTOR ? 'Distributor' : 'Super'}
                             </Text>
                           </View>
+                        )}
+                      </View>
 
-                          <View className="flex-row items-center gap-2 pt-2 border-t border-gray-100 mt-1">
-                            <Ionicons name="calendar-outline" size={12} color="#64748b" />
-                            <Text className="text-xs text-slate-500">
-                              Joined: <Text className="font-semibold text-slate-700">{formattedDate}</Text>
-                            </Text>
-                          </View>
+                      <View className="space-y-1.5 pt-2.5 border-t border-gray-100">
+                        {entity.phone ? (
+                          <TouchableOpacity
+                            onPress={() => Linking.openURL(`tel:${entity.phone}`)}
+                            className="flex-row items-center gap-2"
+                          >
+                            <Ionicons name="call-outline" size={12} color="#64748b" />
+                            <Text className="text-xs text-slate-600 font-semibold">{entity.phone}</Text>
+                          </TouchableOpacity>
+                        ) : null}
 
-                          {entity.createdByName ? (
-                            <View className="flex-row justify-between items-center pt-2 border-t border-dashed border-gray-100 mt-1">
-                              <View className="flex-row items-center gap-1">
-                                <Ionicons name="people-outline" size={12} color="#64748b" />
-                                <Text className="text-[10px] text-slate-400">Added by</Text>
-                              </View>
-                              <Text className="text-[10px] font-semibold text-slate-600">{entity.createdByName} ({entity.createdByRole})</Text>
-                            </View>
-                          ) : null}
+                        <View className="flex-row items-start gap-2">
+                          <Ionicons name="location-outline" size={12} color="#64748b" className="mt-0.5" />
+                          <Text className="text-xs text-slate-500 flex-1 leading-tight">
+                            {[entity.address, entity.city, entity.state].filter(Boolean).join(', ') || 'No address provided'}
+                          </Text>
                         </View>
+
+                        <View className="flex-row items-center gap-2 pt-2 border-t border-gray-100 mt-1">
+                          <Ionicons name="calendar-outline" size={12} color="#64748b" />
+                          <Text className="text-xs text-slate-500">
+                            Joined: <Text className="font-semibold text-slate-700">{formattedDate}</Text>
+                          </Text>
+                        </View>
+
+                        {entity.createdByName ? (
+                          <View className="flex-row justify-between items-center pt-2 border-t border-dashed border-gray-100 mt-1">
+                            <View className="flex-row items-center gap-1">
+                              <Ionicons name="people-outline" size={12} color="#64748b" />
+                              <Text className="text-[10px] text-slate-400">Added by</Text>
+                            </View>
+                            <Text className="text-[10px] font-semibold text-slate-600">{entity.createdByName} ({entity.createdByRole})</Text>
+                          </View>
+                        ) : null}
                       </View>
                     </View>
-                  );
-                })}
+                  </View>
+                );
+              })}
             </View>
           </ScrollView>
         )}

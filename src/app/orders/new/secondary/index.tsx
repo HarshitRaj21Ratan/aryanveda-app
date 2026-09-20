@@ -22,7 +22,8 @@ import { orderService } from '@/services/order.service';
 import { skuService } from '@/services/sku.service';
 import { retailerAuthorizationService } from '@/services/retailerAuthorization.service';
 import { userService } from '@/services/user.service';
-import { type ISku, UserRole } from '@/types';
+import { visitService } from '@/services/visit.service';
+import { type ISku, UserRole, OrderType } from '@/types';
 import { formatCurrency } from '@/lib/order-helpers';
 
 function generateKey(): string {
@@ -101,6 +102,51 @@ export default function NewSecondaryOrderScreen() {
     queryFn: () => userService.listRetailers({ limit: 1000 }),
     enabled: !!user && isSO,
   });
+
+  // Fetch Today's Visit Performance for TC/PC badges (SO/ASE only)
+  const { data: todayPerformanceData } = useQuery({
+    queryKey: ['visit-performance-today', user?.entityId],
+    queryFn: () => visitService.getPerformance('day'),
+    enabled: !!user && isSO,
+  });
+
+  // Fetch Today's Secondary Orders for TC/PC badges (SO/ASE only)
+  const { data: todayOrdersData } = useQuery({
+    queryKey: ['so-today-secondary-orders', user?.entityId],
+    queryFn: () => orderService.list({ type: OrderType.SECONDARY, limit: 500 }),
+    enabled: !!user && isSO,
+  });
+
+  const todayCallStatusMap = useMemo(() => {
+    const map: Record<string, 'PC' | 'TC'> = {};
+    if (!isSO) return map;
+
+    const visits = (todayPerformanceData as any)?.recentVisits ?? [];
+    for (const v of visits) {
+      const rId = v.retailerEntityId || v.retailerId;
+      if (rId) {
+        if (v.productive) {
+          map[rId] = 'PC';
+        } else if (!map[rId]) {
+          map[rId] = 'TC';
+        }
+      }
+    }
+
+    const orders = (todayOrdersData as any)?.data ?? [];
+    const todayStr = new Date().toISOString().split('T')[0];
+    for (const order of orders) {
+      const orderDateStr = order.createdAt ? new Date(order.createdAt).toISOString().split('T')[0] : '';
+      if (orderDateStr === todayStr) {
+        const retailerId = order.fromEntityId || order.onBehalfOfEntityId || order.onBehalfOf;
+        if (retailerId) {
+          map[retailerId] = 'PC';
+        }
+      }
+    }
+
+    return map;
+  }, [isSO, todayPerformanceData, todayOrdersData]);
 
   const retailers = useMemo(() => {
     const authRetailers = (soAuthRetailersData as any)?.retailers ?? (soAuthRetailersData as any)?.data?.retailers ?? [];
@@ -273,7 +319,7 @@ export default function NewSecondaryOrderScreen() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['orders-list-dashboard-app'] });
       queryClient.invalidateQueries({ queryKey: ['orders-summary-dashboard-app'] });
-      Alert.alert('Success', 'Secondary order placed successfully');
+      Alert.alert('Success', 'Order created successfully');
       router.push('/orders');
     },
     onError: (err: any) => {
@@ -577,6 +623,7 @@ export default function NewSecondaryOrderScreen() {
               <ScrollView className="gap-2" showsVerticalScrollIndicator={false}>
                 {retailers.map((r: any) => {
                   const rId = r.entityId || r.retailerId;
+                  const callStatus = todayCallStatusMap[rId];
                   return (
                     <TouchableOpacity
                       key={rId}
@@ -584,14 +631,27 @@ export default function NewSecondaryOrderScreen() {
                         setSelectedRetailerId(rId);
                         setShowRetailerModal(false);
                       }}
-                      className={`p-3.5 rounded-xl border ${
+                      className={`p-3.5 rounded-xl border flex-row items-center justify-between ${
                         selectedRetailerId === rId
                           ? 'border-orange-500 bg-orange-50/50'
                           : 'border-slate-100 bg-transparent'
                       }`}
                     >
-                      <Text className="text-sm font-semibold text-slate-800">{r.name}</Text>
-                      <Text className="text-xs text-slate-400 mt-0.5">{rId}</Text>
+                      <View className="flex-1 mr-2">
+                        <Text className="text-sm font-semibold text-slate-800">{r.name}</Text>
+                        <Text className="text-xs text-slate-400 mt-0.5">{rId}</Text>
+                      </View>
+                      {callStatus && (
+                        <View className={`px-1.5 py-0.5 rounded border ${
+                          callStatus === 'PC' ? 'bg-emerald-50 border-emerald-200' : 'bg-blue-50 border-blue-200'
+                        }`}>
+                          <Text className={`text-[10px] font-bold ${
+                            callStatus === 'PC' ? 'text-emerald-700' : 'text-blue-700'
+                          }`}>
+                            {callStatus}
+                          </Text>
+                        </View>
+                      )}
                     </TouchableOpacity>
                   );
                 })}

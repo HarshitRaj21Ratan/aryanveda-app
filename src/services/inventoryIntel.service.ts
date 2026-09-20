@@ -9,6 +9,8 @@ import type { ApiResponse, PaginatedResponse } from '@/types';
 
 export interface InventoryIntelSummary {
   totalSKUs: number;
+  inStockCount?: number;
+  zeroStockCount?: number;
   lowStockCount: number;
   slowMovingCount: number;
   totalInventoryValue: number;

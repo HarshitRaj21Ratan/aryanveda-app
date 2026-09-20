@@ -94,13 +94,18 @@ export default function SkuReportScreen() {
   const [isExporting, setIsExporting] = useState(false);
 
   const handleExport = async () => {
-    if (skus.length === 0) {
-      Alert.alert('No Data', 'There is no data to export.');
-      return;
-    }
     setIsExporting(true);
     try {
-      const rows = skus.map((sku) => ({
+      const res = await apiClient.get('/dashboard/sku-report', {
+        params: { page: 1, limit: 10000, search: searchQuery || undefined },
+      });
+      const allData = res.data.data?.data || res.data.data || [];
+      if (!allData?.length) {
+        Alert.alert('No Data', 'There is no data to export.');
+        return;
+      }
+
+      const rows = allData.map((sku: SkuReportItem) => ({
         Rank: `#${sku.rank}`,
         'SKU ID': sku.skuId,
         Name: sku.name,
@@ -113,9 +118,9 @@ export default function SkuReportScreen() {
         fileName: `sku-report-${new Date().toISOString().split('T')[0]}.xlsx`,
         sheetName: 'SKU Report',
       });
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      Alert.alert('Error', 'Failed to export SKU report');
+      Alert.alert('Error', e.message || 'Failed to export SKU report');
     } finally {
       setIsExporting(false);
     }

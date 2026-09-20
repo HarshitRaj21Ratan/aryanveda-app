@@ -23,6 +23,7 @@ import { UserRole } from '@/types';
 import { visitService, type VisitPerformancePeriod } from '@/services/visit.service';
 import { userService } from '@/services/user.service';
 import { STATE_OPTIONS } from '@/lib/states';
+import { NewCountersModal } from '@/components/performance/PerformanceComponents';
 
 const { width } = Dimensions.get('window');
 
@@ -448,20 +449,7 @@ export default function AdminPerformanceScreen() {
   });
 
   const [showNewCountersModal, setShowNewCountersModal] = useState(false);
-  const [newCountersSearchQuery, setNewCountersSearchQuery] = useState('');
-
-  const { data: newEntities, isLoading: newEntitiesLoading } = useQuery({
-    queryKey: ['admin-new-entities-modal', activeSoIds.join(','), period, fromDate, toDate, selectedStateParam],
-    queryFn: () => visitService.getAdminNewEntities({
-      soEntityId: activeSoIds,
-      period,
-      fromDate: fromDate || undefined,
-      toDate: toDate || undefined,
-      state: selectedStateParam,
-    }),
-    enabled: showNewCountersModal && activeSoIds.length > 0 && !allSoLoading,
-    staleTime: 60 * 1000,
-  });
+  const [newCountersType, setNewCountersType] = useState<'retailer' | 'distributor_super'>('retailer');
 
   const userLookup = useMemo(() => {
     const m = new Map<string, any>();
@@ -946,7 +934,10 @@ export default function AdminPerformanceScreen() {
 
                   {/* New Counters (Retailers) */}
                   <TouchableOpacity
-                    onPress={() => setShowNewCountersModal(true)}
+                    onPress={() => {
+                      setNewCountersType('retailer');
+                      setShowNewCountersModal(true);
+                    }}
                     className="flex-1 min-w-[45%] bg-white border border-blue-100 p-4 rounded-2xl shadow-sm active:bg-blue-50/50"
                   >
                     <View className="flex-row items-center gap-1.5">
@@ -984,13 +975,22 @@ export default function AdminPerformanceScreen() {
                   )}
 
                   {/* New Counters (Dist/Super) */}
-                  <View className="flex-1 min-w-[45%] bg-white border border-gray-150 p-4 rounded-2xl shadow-sm">
-                    <Text className="text-[9px] font-bold text-emerald-600 uppercase tracking-wider">NEW DIST/SUPER</Text>
+                  <TouchableOpacity
+                    onPress={() => {
+                      setNewCountersType('distributor_super');
+                      setShowNewCountersModal(true);
+                    }}
+                    className="flex-1 min-w-[45%] bg-white border border-emerald-150 p-4 rounded-2xl shadow-sm active:bg-emerald-50/50"
+                  >
+                    <View className="flex-row items-center gap-1.5">
+                      <Ionicons name="people-outline" size={12} color="#059669" />
+                      <Text className="text-[9px] font-bold text-emerald-600 uppercase tracking-wider">NEW DIST/SUPER</Text>
+                    </View>
                     <Text className="text-lg font-black text-emerald-600 mt-1">
                       {(perfData.summary.newDistributorsAdded + perfData.summary.newSupersAdded).toLocaleString('en-IN')}
                     </Text>
-                    <Text className="text-[9px] text-slate-400 mt-0.5">Distributors and Supers added</Text>
-                  </View>
+                    <Text className="text-[9px] text-slate-400 mt-0.5">Click to view details</Text>
+                  </TouchableOpacity>
                 </View>
               )}
             </View>
@@ -1283,153 +1283,19 @@ export default function AdminPerformanceScreen() {
       />
 
       {/* New Entities Modal */}
-      <Modal
+      <NewCountersModal
         visible={showNewCountersModal}
-        animationType="slide"
-        onRequestClose={() => setShowNewCountersModal(false)}
-      >
-        <SafeAreaView style={{ flex: 1 }} className="bg-gray-50">
-          {/* Modal Header */}
-          <View className="bg-white px-5 py-4 border-b border-gray-150 flex-row items-center gap-3.5 shadow-sm">
-            <TouchableOpacity onPress={() => setShowNewCountersModal(false)} className="p-1.5 rounded-full hover:bg-gray-100">
-              <Ionicons name="arrow-back" size={22} color="#4b5563" />
-            </TouchableOpacity>
-            <View>
-              <Text className="text-base font-bold text-gray-900">New Counters Added</Text>
-              <View className="flex-row items-center gap-1.5 mt-0.5">
-                <Text className="text-[10px] text-slate-400 font-semibold">
-                  By {activeSoIds.length === 1 ? (userLookup.get(activeSoIds[0])?.name || activeSoIds[0]) : 'Multiple Users'}
-                </Text>
-                {activeSoRoles.map((role) => (
-                  <View key={role} className="bg-gray-100 px-1.5 py-0.5 rounded border border-gray-200">
-                    <Text className="text-[8px] font-bold text-gray-500 uppercase">{role}</Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-          </View>
-
-          {/* Search bar inside Modal */}
-          <View className="p-4 bg-white border-b border-gray-100 flex-row items-center gap-2">
-            <Ionicons name="search" size={16} color="#9ca3af" />
-            <TextInput
-              placeholder="Search by name or phone..."
-              placeholderTextColor="#9ca3af"
-              value={newCountersSearchQuery}
-              onChangeText={setNewCountersSearchQuery}
-              className="flex-1 text-xs text-slate-800 p-0"
-            />
-            {newCountersSearchQuery ? (
-              <TouchableOpacity onPress={() => setNewCountersSearchQuery('')}>
-                <Ionicons name="close-circle" size={16} color="#9ca3af" />
-              </TouchableOpacity>
-            ) : null}
-          </View>
-
-          {newEntitiesLoading ? (
-            <View className="flex-1 items-center justify-center">
-              <ActivityIndicator size="large" color="#f37021" />
-            </View>
-          ) : !newEntities || newEntities.length === 0 ? (
-            <View className="flex-1 items-center justify-center p-6 gap-3">
-              <Ionicons name="storefront-outline" size={48} color="#cbd5e1" />
-              <Text className="text-xs text-slate-400 font-semibold">No new counters found.</Text>
-            </View>
-          ) : (
-            <ScrollView
-              style={{ flex: 1 }}
-              contentContainerStyle={{ flexGrow: 1, padding: 16, paddingBottom: 80 }}
-              showsVerticalScrollIndicator={true}
-            >
-              <View className="gap-3.5 mb-16">
-                {newEntities
-                  .filter((e: any) => e.role === UserRole.RETAILER)
-                  .filter((e: any) => {
-                    if (!newCountersSearchQuery.trim()) return true;
-                    const q = newCountersSearchQuery.toLowerCase();
-                    return (
-                      (e.name ?? '').toLowerCase().includes(q) ||
-                      (e.phone ?? '').toLowerCase().includes(q)
-                    );
-                  })
-                  .map((entity: any, idx: number) => {
-                    const formattedDate = entity.createdAt
-                      ? new Date(entity.createdAt).toLocaleDateString('en-IN', {
-                        day: '2-digit',
-                        month: 'short',
-                        year: 'numeric',
-                      })
-                      : '-';
-
-                    return (
-                      <View key={`${entity.entityId}-${idx}`} className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
-                        {/* Store Icon Header Area */}
-                        <View className="h-32 bg-slate-100 items-center justify-center relative">
-                          {entity.storeImageUrl ? (
-                            <Image
-                              source={{ uri: entity.storeImageUrl }}
-                              className="h-full w-full"
-                              style={{ resizeMode: 'cover' }}
-                            />
-                          ) : (
-                            <Ionicons name="storefront-outline" size={40} color="#94a3b8" />
-                          )}
-                          <View className="absolute top-3.5 right-3.5 bg-white/90 px-2 py-0.5 rounded-full border border-gray-100">
-                            <Text className="text-[8px] font-bold text-slate-500 uppercase">Counter</Text>
-                          </View>
-                        </View>
-
-                        {/* Store info body */}
-                        <View className="p-4 gap-2.5">
-                          <View>
-                            <Text className="text-sm font-bold text-slate-800">{entity.name || 'Unnamed Counter'}</Text>
-                            <Text className="text-[10px] text-slate-400 font-semibold mt-0.5">ID: {entity.entityId}</Text>
-                          </View>
-
-                          <View className="space-y-1.5 pt-2.5 border-t border-gray-100">
-                            {entity.phone ? (
-                              <TouchableOpacity
-                                onPress={() => Linking.openURL(`tel:${entity.phone}`)}
-                                className="flex-row items-center gap-2"
-                              >
-                                <Ionicons name="call-outline" size={12} color="#64748b" />
-                                <Text className="text-xs text-slate-600 font-semibold">{entity.phone}</Text>
-                              </TouchableOpacity>
-                            ) : null}
-
-                            <View className="flex-row items-start gap-2">
-                              <Ionicons name="location-outline" size={12} color="#64748b" className="mt-0.5" />
-                              <Text className="text-xs text-slate-500 flex-1 leading-tight">
-                                {[entity.address, entity.city, entity.state].filter(Boolean).join(', ') || 'No address provided'}
-                              </Text>
-                            </View>
-
-                            <View className="flex-row items-center gap-2 pt-2 border-t border-gray-100 mt-1">
-                              <Ionicons name="calendar-outline" size={12} color="#64748b" />
-                              <Text className="text-xs text-slate-500">
-                                Joined: <Text className="font-semibold text-slate-700">{formattedDate}</Text>
-                              </Text>
-                            </View>
-
-                            {entity.createdByName ? (
-                              <View className="flex-row justify-between items-center pt-2 border-t border-dashed border-gray-100 mt-1">
-                                <View className="flex-row items-center gap-1">
-                                  <Ionicons name="people-outline" size={12} color="#64748b" />
-                                  <Text className="text-[10px] text-slate-400">Added by</Text>
-                                </View>
-                                <Text className="text-[10px] font-semibold text-slate-600">{entity.createdByName} ({entity.createdByRole})</Text>
-                              </View>
-                            ) : null}
-                          </View>
-                        </View>
-                      </View>
-                    );
-                  })}
-              </View>
-            </ScrollView>
-          )}
-        </SafeAreaView>
-      </Modal>
+        onClose={() => setShowNewCountersModal(false)}
+        activeSoIds={activeSoIds}
+        allSoIds={allSos.map((u) => u.entityId)}
+        period={period}
+        fromDate={fromDate}
+        toDate={toDate}
+        stateParam={selectedStateParam}
+        creatorName={activeSoIds.length === 1 ? (userLookup.get(activeSoIds[0])?.name || activeSoIds[0]) : 'Multiple Users'}
+        creatorRoles={activeSoRoles}
+        type={newCountersType}
+      />
     </View>
   );
 }

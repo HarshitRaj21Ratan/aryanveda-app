@@ -62,6 +62,7 @@ export default function InventoryDashboardScreen() {
       }),
     enabled: !!entityId,
     staleTime: 5 * 60 * 1000,
+    placeholderData: (previousData) => previousData,
   });
 
   const { data: valueData, isLoading: valueLoading } = useQuery({
@@ -118,8 +119,8 @@ export default function InventoryDashboardScreen() {
 
   const handleAdjustStock = () => {
     const qty = Number(adjustQty);
-    if (isNaN(qty) || qty === 0) {
-      Alert.alert('Error', 'Please enter a valid quantity change');
+    if (isNaN(qty) || qty < 0) {
+      Alert.alert('Error', 'Please enter a valid stock quantity');
       return;
     }
     adjustMutation.mutate({ skuId: adjustModalItem.skuId, qty });
@@ -336,7 +337,7 @@ export default function InventoryDashboardScreen() {
                             <TouchableOpacity
                               onPress={() => {
                                 setAdjustModalItem(item);
-                                setAdjustQty('');
+                                setAdjustQty(item.quantity > 0 ? String(item.quantity) : '');
                               }}
                             >
                               <Text className="text-[9px] text-[#f37021] font-bold">Adjust</Text>

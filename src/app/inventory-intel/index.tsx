@@ -23,6 +23,7 @@ import { UserRole } from '@/types';
 import { inventoryIntelService, type InventoryIntelImportRow } from '@/services/inventoryIntel.service';
 import { userService } from '@/services/user.service';
 import { catalogService } from '@/services/catalog.service';
+import { orderService } from '@/services/order.service';
 import { downloadXlsxReport } from '@/lib/xlsx-export';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -92,8 +93,6 @@ export default function InventoryIntelScreen() {
   const user = useAuthStore((s) => s.user);
 
   // App States
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [searchHeaderQuery, setSearchHeaderQuery] = useState('');
   const [tab, setTab] = useState<IntelTab>('stock');
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
@@ -115,41 +114,52 @@ export default function InventoryIntelScreen() {
   const entityId = user?.entityId ?? '';
   const role = user?.role as UserRole | undefined;
 
-  const isManager = role === UserRole.ASM || role === UserRole.RSM;
+  const isManager = role === UserRole.ASM || role === UserRole.RSM || role === UserRole.NSM;
   const isSO = role === UserRole.SO || role === UserRole.ASE;
   const isDistributor = role === UserRole.DISTRIBUTOR;
 
-  const canAdjustStock = role === UserRole.SUPER_STOCKIST || role === UserRole.DISTRIBUTOR || isManager || isSO;
-  const canEditThreshold = role === UserRole.SUPER_STOCKIST || role === UserRole.DISTRIBUTOR || role === UserRole.RETAILER || isManager || isSO;
+  const canAdjustStock = role === UserRole.ADMIN || role === UserRole.SUPER_STOCKIST || role === UserRole.DISTRIBUTOR || isManager || isSO;
+  const canEditThreshold = role === UserRole.ADMIN || role === UserRole.SUPER_STOCKIST || role === UserRole.DISTRIBUTOR || role === UserRole.RETAILER || isManager || isSO;
 
-  const activeEntityId = (isDistributor || isManager || isSO) ? (selectedEntityId || entityId) : entityId;
+  const activeEntityId = (isManager || isSO) ? (selectedEntityId || entityId) : entityId;
   const hasSelectedTarget = (isManager || isSO) ? !!selectedEntityId : true;
   const isQueryEnabled = !!activeEntityId && !!user && hasSelectedTarget;
 
-  // Subordinate Data Queries
-  const { data: retailersData } = useQuery({
-    queryKey: ['inventory-intel-sub-retailers', entityId],
-    queryFn: () => userService.listRetailers({ limit: 500 }),
-    enabled: !!entityId && isDistributor,
-  });
-
   const { data: superStockistsData } = useQuery({
     queryKey: ['inventory-intel-sub-super-stockists', entityId],
-    queryFn: () => userService.listByRole(UserRole.SUPER_STOCKIST),
+    queryFn: async () => {
+      const res = await orderService.getConnectedSuperStockists();
+      return { success: true, data: res.data?.superStockists ?? [] };
+    },
     enabled: !!entityId && isManager,
   });
 
   const { data: distributorsData } = useQuery({
     queryKey: ['inventory-intel-sub-distributors', entityId],
-    queryFn: () => userService.listByRole(UserRole.DISTRIBUTOR),
-    enabled: !!entityId && isSO,
+    queryFn: async () => {
+      const res = await orderService.getConnectedDistributors();
+      return { success: true, data: res.data?.distributors ?? [] };
+    },
+    enabled: !!entityId && (isSO || isManager),
   });
+
+  // Auto-select first subordinate if none selected yet for manager / SO
+  React.useEffect(() => {
+    if (!selectedEntityId) {
+      if (isManager && superStockistsData?.data && superStockistsData.data.length > 0) {
+        setSelectedEntityId(superStockistsData.data[0].entityId);
+      } else if (isSO && distributorsData?.data && distributorsData.data.length > 0) {
+        setSelectedEntityId(distributorsData.data[0].entityId);
+      }
+    }
+  }, [selectedEntityId, isManager, isSO, superStockistsData?.data, distributorsData?.data]);
 
   // Intel Dashboard Queries
   const { data: summary, isLoading: summaryLoading } = useQuery({
     queryKey: ['inventory-intel-summary-data', activeEntityId],
     queryFn: () => inventoryIntelService.getInventoryIntelSummary(activeEntityId),
     enabled: isQueryEnabled,
+    staleTime: 60 * 1000,
   });
 
   const { data: stockData, isLoading: stockLoading, isError: stockError, error: stockQueryError, refetch } = useQuery({
@@ -161,18 +171,29 @@ export default function InventoryIntelScreen() {
         search: search || undefined,
       }),
     enabled: isQueryEnabled,
+    staleTime: 30 * 1000,
+    placeholderData: (previousData) => previousData,
+  });
+
+  const { data: lowStockData } = useQuery({
+    queryKey: ['inventory-intel-low-stock-data', activeEntityId],
+    queryFn: () => inventoryIntelService.getLowStockAlerts(activeEntityId),
+    enabled: isQueryEnabled,
+    staleTime: 60 * 1000,
   });
 
   const { data: analyticsData } = useQuery({
     queryKey: ['inventory-intel-analytics-data', activeEntityId],
-    queryFn: () => inventoryIntelService.getAnalytics({ entityId: activeEntityId, page: 1, limit: 100 }),
+    queryFn: () => inventoryIntelService.getAnalytics({ entityId: activeEntityId, page: 1, limit: 5000 }),
     enabled: isQueryEnabled,
+    staleTime: 60 * 1000,
   });
 
   const { data: ledgerData } = useQuery({
     queryKey: ['inventory-intel-ledger-data', activeEntityId],
     queryFn: () => inventoryIntelService.getLedger(activeEntityId, { limit: 1000, skip: 0 }),
     enabled: isQueryEnabled,
+    staleTime: 60 * 1000,
   });
 
   const analyticsRows: SkuAnalyticsRow[] = useMemo(() => analyticsData?.data?.skus ?? [], [analyticsData]);
@@ -217,6 +238,50 @@ export default function InventoryIntelScreen() {
   const stockItems = shouldUseStockFallback ? fallbackStock.data : (stockData?.data ?? []);
   const stockTotal = shouldUseStockFallback ? fallbackStock.total : (stockData?.total ?? 0);
   const totalPages = Math.max(1, Math.ceil(stockTotal / limit));
+
+  const { activeCount, outOfStockCount } = useMemo(() => {
+    if (typeof summary?.inStockCount === 'number') {
+      return {
+        activeCount: summary.inStockCount,
+        outOfStockCount: summary.zeroStockCount ?? 0,
+      };
+    }
+
+    if (analyticsRows && analyticsRows.length > 0) {
+      let active = 0;
+      let outOfStock = 0;
+      for (const row of analyticsRows) {
+        if ((row.quantityAvailable ?? 0) > 0) {
+          active++;
+        } else {
+          outOfStock++;
+        }
+      }
+      return { activeCount: active, outOfStockCount: outOfStock };
+    }
+
+    if (stockItems && stockItems.length > 0) {
+      let active = 0;
+      let outOfStock = 0;
+      for (const item of stockItems) {
+        if ((item.quantity ?? 0) > 0) {
+          active++;
+        } else {
+          outOfStock++;
+        }
+      }
+      return { activeCount: active, outOfStockCount: outOfStock };
+    }
+
+    const total = summary?.totalSKUs ?? stockTotal ?? 0;
+    if (lowStockData?.data && Array.isArray(lowStockData.data)) {
+      const oos = lowStockData.data.filter((item) => item.quantity <= 0).length;
+      const active = Math.max(0, total - oos);
+      return { activeCount: active, outOfStockCount: oos };
+    }
+
+    return { activeCount: 0, outOfStockCount: 0 };
+  }, [summary, stockTotal, lowStockData, analyticsRows, stockItems]);
 
   // Analytics tab calculations
   const principalBreakdown = useMemo(() => {
@@ -282,7 +347,7 @@ export default function InventoryIntelScreen() {
   }, [stockData, fallbackStock, shouldUseStockFallback, analyticsRows]);
 
   const lowStockAlerts = useMemo(() => {
-    const list = shouldUseStockFallback ? fallbackStock.data : (stockData?.data ?? []);
+    const list = lowStockData?.data ?? (shouldUseStockFallback ? fallbackStock.data : (stockData?.data ?? []));
     return list
       .filter((item) => item.isLowStock || item.quantity <= item.lowStockThreshold)
       .map((item) => {
@@ -296,15 +361,19 @@ export default function InventoryIntelScreen() {
         };
       })
       .sort((a, b) => b.deficit - a.deficit);
-  }, [stockData, fallbackStock, shouldUseStockFallback, analyticsRows]);
+  }, [lowStockData, stockData, fallbackStock, shouldUseStockFallback, analyticsRows]);
 
   // Mutations
   const adjustMutation = useMutation({
     mutationFn: ({ eId, sId, qty }: { eId: string; sId: string; qty: number }) =>
-      inventoryIntelService.adjustStock(eId, sId, { quantityChange: qty }),
+      inventoryIntelService.adjustStock(eId, sId, { quantity: qty, newQuantity: qty, quantityChange: qty }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['inventory-intel-stock-data'] });
       queryClient.invalidateQueries({ queryKey: ['inventory-intel-summary-data'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory-intel-analytics-data'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory-intel-low-stock-data'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory-intel-ledger-data'] });
+      refetch();
       setAdjustModal(null);
       setAdjustQty('');
       Alert.alert('Success', 'Stock level adjusted successfully');
@@ -320,6 +389,10 @@ export default function InventoryIntelScreen() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['inventory-intel-stock-data'] });
       queryClient.invalidateQueries({ queryKey: ['inventory-intel-summary-data'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory-intel-analytics-data'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory-intel-low-stock-data'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory-intel-ledger-data'] });
+      refetch();
       setThresholdModal(null);
       setNewThreshold('');
       Alert.alert('Success', 'Alert threshold updated');
@@ -332,8 +405,8 @@ export default function InventoryIntelScreen() {
   // Action Handlers
   const handleAdjustStockSubmit = () => {
     const qty = Number(adjustQty);
-    if (isNaN(qty) || qty === 0) {
-      Alert.alert('Error', 'Please enter a valid quantity change');
+    if (isNaN(qty) || qty < 0) {
+      Alert.alert('Error', 'Please enter a valid stock quantity');
       return;
     }
     if (!adjustModal) return;
@@ -505,6 +578,9 @@ export default function InventoryIntelScreen() {
       const res = await inventoryIntelService.importStock(rows);
       queryClient.invalidateQueries({ queryKey: ['inventory-intel-stock-data'] });
       queryClient.invalidateQueries({ queryKey: ['inventory-intel-summary-data'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory-intel-analytics-data'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory-intel-low-stock-data'] });
+      queryClient.invalidateQueries({ queryKey: ['inventory-intel-ledger-data'] });
       refetch();
 
       Alert.alert(
@@ -574,14 +650,8 @@ export default function InventoryIntelScreen() {
         ...(distributorsData?.data ?? []).map((x) => ({ value: x.entityId, label: `${x.name} (Distributor)` })),
       ];
     }
-    if (isDistributor) {
-      return [
-        { value: entityId, label: 'My Inventory' },
-        ...(retailersData?.data ?? []).map((x) => ({ value: x.entityId, label: `${x.name} (Retailer)` })),
-      ];
-    }
     return [];
-  }, [isManager, isSO, isDistributor, entityId, superStockistsData, distributorsData, retailersData]);
+  }, [isManager, isSO, entityId, superStockistsData, distributorsData]);
 
   const activeSubordinateLabel = useMemo(() => {
     const selected = subordinatesOptions.find((x) => x.value === activeEntityId);
@@ -604,23 +674,7 @@ export default function InventoryIntelScreen() {
     });
   }, [subordinatesOptions, subordinateSearchQuery]);
 
-  const sidebarItems = [
-    { name: 'BP Transfer', icon: 'swap-horizontal-outline' as const, route: '/admin/transfer-business-partner' },
-    { name: 'Territories', icon: 'location-outline' as const, route: '/admin/geofence' },
-    { name: 'SKU Catalog', icon: 'book-outline' as const, route: '/admin/inventory' },
-    { name: 'Stock Movements', icon: 'cube-outline' as const, route: '/stock-movements' },
-    { name: 'Orders', icon: 'cart-outline' as const, route: '/admin/performance' },
-    { name: 'Leaderboard', icon: 'trophy-outline' as const, route: '/leaderboard' },
-    { name: 'Outlet Report', icon: 'home-outline' as const, route: '/outlet-wise' },
-    { name: 'SKU Report', icon: 'bar-chart-outline' as const, route: '/admin/inventory' },
-    { name: 'Notifications', icon: 'notifications-outline' as const, route: '/announcement' },
-    { name: 'Performance Track', icon: 'stats-chart-outline' as const, route: '/admin/performance' },
-    { name: 'Attendance Track', icon: 'clipboard-outline' as const, route: '/admin/attendance' },
-    { name: 'Summary', icon: 'grid-outline' as const, route: '/admin/summary' },
-    { name: 'Admin Inventory', icon: 'archive-outline' as const, route: '/admin/inventory' },
-    { name: 'Announcements', icon: 'megaphone-outline' as const, route: '/announcement' },
-    // { name: 'Role Permissions', icon: 'shield-checkmark-outline' as const, route: '/admin/role-permissions' },
-  ];
+
 
   return (
     <View className="flex-1 bg-gray-50">
@@ -635,9 +689,18 @@ export default function InventoryIntelScreen() {
         <View className="mx-6 mt-3 gap-3">
           <View className="bg-white border border-gray-150 rounded-2xl p-5 shadow-sm">
             <Text className="text-xs font-bold text-slate-400">Total SKUs</Text>
-            <Text className="text-2xl font-black text-slate-800 mt-1">
-              {summaryLoading ? '...' : (summary?.totalSKUs ?? 0)}
-            </Text>
+            <View className="flex-row items-center gap-2 mt-1 flex-wrap">
+              <Text className="text-2xl font-black text-slate-800">
+                {summaryLoading ? '...' : (summary?.totalSKUs ?? stockTotal ?? 0)}
+              </Text>
+              {!summaryLoading && (
+                <View className="bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full">
+                  <Text className="text-[10px] font-bold text-emerald-700">
+                    {activeCount} Active · {outOfStockCount} Out of Stock
+                  </Text>
+                </View>
+              )}
+            </View>
           </View>
 
           <View className="bg-white border border-gray-150 rounded-2xl p-5 shadow-sm">
@@ -825,9 +888,7 @@ export default function InventoryIntelScreen() {
                         }
                         const stockInCase = item.currentStockInCase ?? (boxQty ? Math.floor(item.quantity / boxQty) : 0);
 
-                        let statusBg = 'bg-emerald-50 text-emerald-700 border-emerald-200';
-                        if (status === 'CRITICAL') statusBg = 'bg-red-50 text-red-700 border-red-200';
-                        else if (status === 'LOW') statusBg = 'bg-amber-50 text-amber-700 border-amber-200';
+
 
                         return (
                           <View key={`${item.entityId}-${item.skuId}`} className="flex-row border-b border-gray-100 px-4 py-3 items-center">
@@ -862,8 +923,8 @@ export default function InventoryIntelScreen() {
                               )}
                             </View>
                             <View className="w-20">
-                              <View className={`px-1.5 py-0.5 rounded-full border items-center justify-center ${statusBg}`}>
-                                <Text className="text-[8px] font-bold uppercase">{status}</Text>
+                              <View className={`px-1.5 py-0.5 rounded-full border items-center justify-center ${statusBadgeBg(status)}`}>
+                                <Text className={`text-[8px] font-bold uppercase ${statusBadgeText(status)}`}>{status}</Text>
                               </View>
                             </View>
 
@@ -876,7 +937,7 @@ export default function InventoryIntelScreen() {
                                       skuId: item.skuId,
                                       skuName: analyticsMeta?.name || item.skuName || item.skuId,
                                     });
-                                    setAdjustQty('');
+                                    setAdjustQty(item.quantity > 0 ? String(item.quantity) : '');
                                   }}
                                 >
                                   <Text className="text-xs font-semibold text-orange-600">Adjust Stock</Text>

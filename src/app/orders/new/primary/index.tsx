@@ -206,7 +206,7 @@ export default function NewPrimaryOrderScreen() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['orders-list-dashboard-app'] });
       queryClient.invalidateQueries({ queryKey: ['orders-summary-dashboard-app'] });
-      Alert.alert('Success', isSS ? 'Stock-in order created successfully' : 'Primary order created successfully');
+      Alert.alert('Success', 'Order created successfully');
       router.push('/orders');
     },
     onError: (err: any) => {

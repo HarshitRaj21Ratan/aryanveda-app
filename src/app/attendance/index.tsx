@@ -301,13 +301,19 @@ export default function MyAttendanceScreen() {
   const [isExporting, setIsExporting] = useState(false);
 
   const handleExport = async () => {
-    if (records.length === 0) {
-      Alert.alert('No Data', 'There is no attendance history to export.');
-      return;
-    }
     setIsExporting(true);
     try {
-      const rows = records.map((rec: any) => ({
+      const { exportPaginatedData } = require('@/lib/xlsx-export');
+      const baseParams = {
+        fromDate: fromDate || undefined,
+        toDate: toDate || undefined,
+        attendanceStatus: statusFilter || undefined,
+        workingType: workingTypeFilter || undefined,
+        isLate: lateFilterValue,
+        sortOrder: 'desc',
+      };
+
+      const rowMapper = (rec: any) => ({
         Date: rec.attendanceDateKey,
         Status: formatAttendanceStatus(rec.attendanceStatus),
         'Working Type': formatWorkingType(rec.workingType),
@@ -316,15 +322,20 @@ export default function MyAttendanceScreen() {
         Outstation: rec.isOutstation ? 'Yes' : 'No',
         Remark: rec.remark || '-',
         'Marked At': new Date(rec.markedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-      }));
-      const { downloadXlsxReport } = require('@/lib/xlsx-export');
-      await downloadXlsxReport(rows, {
-        fileName: `attendance-report-${new Date().toISOString().split('T')[0]}.xlsx`,
-        sheetName: 'Attendance',
       });
-    } catch (e) {
+
+      await exportPaginatedData(
+        attendanceService.getMyAttendanceHistory,
+        baseParams,
+        rowMapper,
+        {
+          fileName: `attendance-report-${new Date().toISOString().split('T')[0]}.xlsx`,
+          sheetName: 'Attendance',
+        }
+      );
+    } catch (e: any) {
       console.error(e);
-      Alert.alert('Error', 'Failed to export attendance report');
+      Alert.alert('Error', e.message || 'Failed to export attendance report');
     } finally {
       setIsExporting(false);
     }

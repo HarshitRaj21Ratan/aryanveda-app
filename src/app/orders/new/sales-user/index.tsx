@@ -67,18 +67,21 @@ interface LineItem {
 
 export default function NewSalesUserOrderScreen() {
   const router = useRouter();
-  const { distributorId, distributorName: paramDistributorName } = useLocalSearchParams<{
+  const { distributorId, distributorName: paramDistributorName, targetRole } = useLocalSearchParams<{
     distributorId: string;
     distributorName?: string;
+    targetRole?: string;
   }>();
   const user = useAuthStore((s) => s.user);
   const queryClient = useQueryClient();
+
+  const isSuperStockistTarget = targetRole === 'SUPER_STOCKIST';
 
   const [selectedDistributorId, setSelectedDistributorId] = useState(distributorId || '');
   const [showDistributorModal, setShowDistributorModal] = useState(false);
 
   const [items, setItems] = useState<LineItem[]>([
-    { id: generateKey(), skuId: '', qty: '', unitMode: 'dozen', searchQuery: '', showDropdown: false, showUnitDropdown: false },
+    { id: generateKey(), skuId: '', qty: '', unitMode: isSuperStockistTarget ? 'box' : 'dozen', searchQuery: '', showDropdown: false, showUnitDropdown: false },
   ]);
 
   const [idempotencyKey] = useState(() => generateKey());
@@ -92,27 +95,30 @@ export default function NewSalesUserOrderScreen() {
     enabled: !!user,
   });
 
-  // Fetch Connected Distributors
-  const { data: connectedDistributorsData } = useQuery({
-    queryKey: ['connected-distributors-new-sales'],
-    queryFn: () => orderService.getConnectedDistributors(),
+  // Fetch Connected Entities (Distributors or Super Stockists depending on targetRole)
+  const { data: connectedEntitiesData } = useQuery({
+    queryKey: ['connected-entities-new-sales', targetRole],
+    queryFn: () => isSuperStockistTarget ? orderService.getConnectedSuperStockists() : orderService.getConnectedDistributors(),
     enabled: !!user,
   });
 
   const skus: ISku[] = skusData?.data ?? [];
   const skuMap = useMemo(() => new Map(skus.map((s) => [s.skuId, s])), [skus]);
 
-  const distributors = connectedDistributorsData?.data?.distributors ?? [];
+  const connectedEntities = isSuperStockistTarget
+    ? ((connectedEntitiesData?.data as any)?.superStockists ?? [])
+    : ((connectedEntitiesData?.data as any)?.distributors ?? []);
+
   const selectedDistributorName = useMemo(() => {
     if (paramDistributorName) return paramDistributorName;
-    const dist = distributors.find((d) => d.entityId === selectedDistributorId);
-    return dist ? dist.name : '';
-  }, [distributors, selectedDistributorId, paramDistributorName]);
+    const found = connectedEntities.find((e: any) => e.entityId === selectedDistributorId);
+    return found ? found.name : '';
+  }, [connectedEntities, selectedDistributorId, paramDistributorName]);
 
   const handleAddItem = () => {
     setItems((prev) => [
       ...prev,
-      { id: generateKey(), skuId: '', qty: '', unitMode: 'dozen', searchQuery: '', showDropdown: false, showUnitDropdown: false },
+      { id: generateKey(), skuId: '', qty: '', unitMode: isSuperStockistTarget ? 'box' : 'dozen', searchQuery: '', showDropdown: false, showUnitDropdown: false },
     ]);
   };
 
@@ -129,7 +135,7 @@ export default function NewSalesUserOrderScreen() {
   const computedLines = useMemo(() => {
     return items.map((item) => {
       const sku = skuMap.get(item.skuId);
-      const normalizedUnitMode = item.unitMode === 'box' ? 'box' : 'dozen';
+      const normalizedUnitMode = isSuperStockistTarget ? 'box' : item.unitMode === 'box' ? 'box' : 'dozen';
       const qtyVal = parseInt(item.qty, 10) || 0;
 
       const packPcsStr = getSkuPackPcs(sku);
@@ -142,7 +148,9 @@ export default function NewSalesUserOrderScreen() {
         normalizedUnitMode === 'dozen' ? packPcsNum : casePcsNum;
       const quantityInPieces = qtyVal * unitMultiplier;
 
-      const basePackPrice = pickPositivePrice(sku?.pricePerDozenDist, sku?.boxPrice, sku?.price);
+      const basePackPrice = isSuperStockistTarget
+        ? pickPositivePrice(sku?.pricePerDozenSS, sku?.boxPrice, sku?.price)
+        : pickPositivePrice(sku?.pricePerDozenDist, sku?.boxPrice, sku?.price);
       const unitPrice = basePackPrice > 0 ? Math.round((basePackPrice / 12) * 100) / 100 : 0;
       const bill = Math.round(quantityInPieces * unitPrice * 100) / 100;
 
@@ -164,7 +172,7 @@ export default function NewSalesUserOrderScreen() {
         casePcsStr,
       };
     });
-  }, [items, skuMap]);
+  }, [items, skuMap, isSuperStockistTarget]);
 
   const totals = useMemo(() => {
     let totalQty = 0;
@@ -194,22 +202,31 @@ export default function NewSalesUserOrderScreen() {
           unitMode: l.normalizedUnitMode,
         }));
 
-      return orderService.createSalesUserOrder({
-        distributorId: selectedDistributorId,
+      const payload: any = {
         items: payloadItems,
         idempotencyKey,
-      });
+      };
+
+      if (isSuperStockistTarget) {
+        payload.superStockistId = selectedDistributorId;
+      } else {
+        payload.distributorId = selectedDistributorId;
+      }
+
+      return orderService.createSalesUserOrder(payload);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['orders-list-dashboard-app'] });
       queryClient.invalidateQueries({ queryKey: ['orders-summary-dashboard-app'] });
-      Alert.alert('Success', 'Distributor order booked successfully');
+      Alert.alert('Success', 'Order created successfully');
       router.push('/orders');
     },
     onError: (err: any) => {
-      Alert.alert('Error', err.message || 'Failed to place distributor order');
+      Alert.alert('Error', err.message || `Failed to place ${isSuperStockistTarget ? 'Super Stockist' : 'Distributor'} order`);
     },
   });
+
+  const targetLabel = isSuperStockistTarget ? 'Super Stockist' : 'Distributor';
 
   return (
     <SafeAreaView className="flex-1 bg-slate-50/50">
@@ -221,7 +238,7 @@ export default function NewSalesUserOrderScreen() {
             <Text className="text-slate-500 text-sm">Back to Orders</Text>
           </TouchableOpacity>
           <Text className="text-2xl font-bold text-slate-800">
-            {selectedDistributorName ? `New Order from ${selectedDistributorName}` : 'New Distributor Order'}
+            {selectedDistributorName ? `New Order from ${selectedDistributorName}` : `New ${targetLabel} Order`}
           </Text>
           <Text className="text-slate-500 text-xs mt-1">
             Select SKUs, choose Pack / Case, and enter quantity
@@ -234,15 +251,15 @@ export default function NewSalesUserOrderScreen() {
           <View className="px-6 pb-24">
             {/* Card Wrap */}
             <View className="bg-white border border-slate-200/80 rounded-2xl shadow-sm p-6 mb-6">
-              {/* Distributor dropdown */}
+              {/* Entity dropdown */}
               <View className="mb-6">
-                <Text className="text-[10px] text-slate-400 font-bold uppercase mb-1">Distributor</Text>
+                <Text className="text-[10px] text-slate-400 font-bold uppercase mb-1">{targetLabel}</Text>
                 <TouchableOpacity
                   onPress={() => setShowDistributorModal(true)}
                   className="flex-row items-center justify-between border border-slate-200 rounded-xl bg-white px-3 py-2.5"
                 >
                   <Text className="text-sm text-slate-700 font-medium">
-                    {selectedDistributorName || 'Select Distributor'}
+                    {selectedDistributorName || `Select ${targetLabel}`}
                   </Text>
                   <Ionicons name="chevron-down" size={14} color="#64748b" className="opacity-60" />
                 </TouchableOpacity>
@@ -413,28 +430,30 @@ export default function NewSalesUserOrderScreen() {
                               className="absolute top-[46px] left-0 right-0 z-[100] bg-white border border-slate-200 rounded-xl shadow-lg"
                               style={{ zIndex: 100, backgroundColor: 'white' }}
                             >
-                              <TouchableOpacity
-                                onPress={() => {
-                                  handleUpdateItem(line.id, 'unitMode', 'dozen');
-                                  handleUpdateItem(line.id, 'showUnitDropdown', false);
-                                }}
-                                className="p-3 border-b border-slate-50 active:bg-slate-50"
-                              >
-                                <Text className="text-xs text-slate-700 font-medium">
-                                  Pack ({line.packPcsStr} pcs)
-                                </Text>
-                              </TouchableOpacity>
-                              <TouchableOpacity
-                                onPress={() => {
-                                  handleUpdateItem(line.id, 'unitMode', 'box');
-                                  handleUpdateItem(line.id, 'showUnitDropdown', false);
-                                }}
-                                className="p-3 active:bg-slate-50"
-                              >
-                                <Text className="text-xs text-slate-700 font-medium">
-                                  Case ({line.casePcsStr} pcs)
-                                </Text>
-                              </TouchableOpacity>
+                                {!isSuperStockistTarget && (
+                                  <TouchableOpacity
+                                    onPress={() => {
+                                      handleUpdateItem(line.id, 'unitMode', 'dozen');
+                                      handleUpdateItem(line.id, 'showUnitDropdown', false);
+                                    }}
+                                    className="p-3 border-b border-slate-50 active:bg-slate-50"
+                                  >
+                                    <Text className="text-xs text-slate-700 font-medium">
+                                      Pack ({line.packPcsStr} pcs)
+                                    </Text>
+                                  </TouchableOpacity>
+                                )}
+                                <TouchableOpacity
+                                  onPress={() => {
+                                    handleUpdateItem(line.id, 'unitMode', 'box');
+                                    handleUpdateItem(line.id, 'showUnitDropdown', false);
+                                  }}
+                                  className="p-3 active:bg-slate-50"
+                                >
+                                  <Text className="text-xs text-slate-700 font-medium">
+                                    Case ({line.casePcsStr} pcs)
+                                  </Text>
+                                </TouchableOpacity>
                             </View>
                           )}
                         </View>
@@ -509,18 +528,18 @@ export default function NewSalesUserOrderScreen() {
         )}
       </ScrollView>
 
-      {/* Distributor Selection Modal */}
+      {/* Entity Selection Modal */}
       <Modal visible={showDistributorModal} animationType="slide" transparent={true}>
         <SafeAreaView className="flex-1 bg-black/50 justify-end">
           <View className="bg-white rounded-t-3xl max-h-[70%] p-6">
             <View className="flex-row justify-between items-center mb-4">
-              <Text className="text-base font-bold text-slate-800">Select Distributor</Text>
+              <Text className="text-base font-bold text-slate-800">Select {targetLabel}</Text>
               <TouchableOpacity onPress={() => setShowDistributorModal(false)}>
                 <Ionicons name="close" size={20} color="#64748b" />
               </TouchableOpacity>
             </View>
             <ScrollView className="gap-2" showsVerticalScrollIndicator={false}>
-              {distributors.map((d) => (
+              {connectedEntities.map((d: any) => (
                 <TouchableOpacity
                   key={d.entityId}
                   onPress={() => {

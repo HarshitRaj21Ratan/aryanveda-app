@@ -28,7 +28,7 @@ import { catalogService } from '@/services/catalog.service';
 import { userService } from '@/services/user.service';
 import { UserRole } from '@/types';
 import { formatCurrencyDecimal as formatCurrency } from '@/lib/format-utils';
-import { STATE_OPTIONS } from '@/lib/states';
+import { STATE_OPTIONS, getScopedStateOptions } from '@/lib/states';
 
 const RETAILER_TYPES = ['Cosmetic store', 'Cosmetics Shop', 'Salon', 'Supermarket', 'Wholesaler', 'Others'];
 const { width } = Dimensions.get('window');
@@ -50,11 +50,20 @@ export default function BeatVisitsScreen() {
   const [showFormTypeModal, setShowFormTypeModal] = useState(false);
   const [showFormDistributorModal, setShowFormDistributorModal] = useState(false);
 
+  const scopedFormStateOptions = useMemo(() => {
+    return getScopedStateOptions(user?.state, user?.role);
+  }, [user?.state, user?.role]);
+
+  const defaultFormState = useMemo(() => {
+    if (scopedFormStateOptions.length > 0) return scopedFormStateOptions[0].value;
+    return user?.state?.split(',')[0]?.trim()?.toLowerCase() || '';
+  }, [scopedFormStateOptions, user?.state]);
+
   // Form Fields
   const [retailerName, setRetailerName] = useState('');
   const [retailerPhone, setRetailerPhone] = useState('');
   const [retailerPassword, setRetailerPassword] = useState('');
-  const [retailerState, setRetailerState] = useState('');
+  const [retailerState, setRetailerState] = useState(defaultFormState);
   const [retailerBeat, setRetailerBeat] = useState('');
   const [retailerType, setRetailerType] = useState('');
   const [customRetailerType, setCustomRetailerType] = useState('');
@@ -183,6 +192,8 @@ export default function BeatVisitsScreen() {
     queryKey: ['state-retailers', selectedRetailerState, retailersPage],
     queryFn: () => userService.listRetailers({ state: selectedRetailerState, page: retailersPage, limit: retailersLimit }),
     enabled: !!selectedRetailerState,
+    staleTime: 30 * 1000,
+    placeholderData: (previousData) => previousData,
   });
 
   // Get GPS Location Coordinates
@@ -210,17 +221,17 @@ export default function BeatVisitsScreen() {
   useEffect(() => {
     if (showModal) {
       requestLocation();
-      if (user && (user.role === UserRole.SO || user.role === UserRole.ASE)) {
-        if (!retailerSalesAgent) {
+      if (user) {
+        if ((user.role === UserRole.SO || user.role === UserRole.ASE) && !retailerSalesAgent) {
           setRetailerSalesAgent(user.entityId);
           setSalesAgentSearch(user.name);
         }
-        if (user.state && !retailerState) {
-          setRetailerState(user.state);
+        if (!retailerState || user.state) {
+          setRetailerState(defaultFormState);
         }
       }
     }
-  }, [showModal, user]);
+  }, [showModal, user, defaultFormState]);
 
   // Mutations
   const createRetailerMutation = useMutation({
@@ -1028,7 +1039,7 @@ export default function BeatVisitsScreen() {
                     </TouchableOpacity>
                   </View>
                   <FlatList
-                    data={STATE_OPTIONS}
+                    data={scopedFormStateOptions}
                     keyExtractor={(item) => item.value}
                     renderItem={({ item }) => (
                       <TouchableOpacity

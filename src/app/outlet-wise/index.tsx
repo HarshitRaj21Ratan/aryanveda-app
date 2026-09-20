@@ -196,6 +196,7 @@ export default function OutletWiseScreen() {
       }),
     enabled: isAllowed,
     staleTime: 30_000,
+    placeholderData: (previousData) => previousData,
     retry: 2,
   });
 

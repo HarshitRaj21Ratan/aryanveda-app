@@ -8,6 +8,7 @@ import {
   ScrollView,
   Alert,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,6 +20,8 @@ import { formatCurrencyDecimal as formatCurrency } from '@/lib/format-utils';
 import { exportPaginatedData } from '@/lib/xlsx-export';
 
 export default function AdminInventoryScreen() {
+  const router = useRouter();
+
   // Selection States
   const [selectedUser, setSelectedUser] = useState<any | null>(null);
   const [userSearchQuery, setUserSearchQuery] = useState('');
@@ -41,17 +44,18 @@ export default function AdminInventoryScreen() {
       setIsExporting(true);
       
       const rowMapper = (item: any) => {
-        const caseQty = item.boxQty ?? 1;
-        const masterPack = item.masterPackQty ?? 1;
-        const noOfCases = Math.floor(item.quantity / caseQty);
-        const amount = noOfCases * ((item.superTotal ?? 0) * masterPack);
+        const caseQty = item.boxQty && item.boxQty > 0 ? item.boxQty : 1;
+        const masterPackQty = item.masterPackQty && item.masterPackQty > 0 ? item.masterPackQty : 1;
+        const forPerPc = item.perPcPrice && item.perPcPrice > 0 ? item.perPcPrice : (item.forPerPc && item.forPerPc > 0 ? item.forPerPc : 12);
+        const noOfCases = Math.floor((item.quantity ?? 0) / caseQty);
+        const amount = Math.round(((item.superTotal ?? 0) / forPerPc) * (item.quantity ?? 0) * 100) / 100;
         return {
           'SKU ID': item.skuId,
           'Product Name': item.skuName ?? 'Unknown',
           'Weight': item.skuWeight ?? 'N/A',
           'Quantity': item.quantity,
           'Case QTY': caseQty,
-          'Master': masterPack,
+          'Master': masterPackQty,
           'No. of cases': noOfCases,
           'Amount': amount,
           'Low Stock Threshold': item.lowStockThreshold,
@@ -90,6 +94,23 @@ export default function AdminInventoryScreen() {
   };
 
   // Queries
+  const { data: roleCountsRes, isLoading: roleCountsLoading } = useQuery({
+    queryKey: ['admin-users-count-by-role'],
+    queryFn: () => userService.countByRole(),
+  });
+
+  const roleCounts = roleCountsRes?.data?.counts ?? {};
+  const superStockistCount =
+    roleCounts[UserRole.SUPER_STOCKIST] ??
+    roleCounts['super_stockist'] ??
+    roleCounts['SUPER_STOCKIST'] ??
+    0;
+  const distributorCount =
+    roleCounts[UserRole.DISTRIBUTOR] ??
+    roleCounts['distributor'] ??
+    roleCounts['DISTRIBUTOR'] ??
+    0;
+
   const { data: statesList } = useQuery({
     queryKey: ['admin-unique-states'],
     queryFn: () => userService.listUniqueStates(),
@@ -102,9 +123,9 @@ export default function AdminInventoryScreen() {
         state: selectedState || undefined,
         role: selectedRole || undefined,
         search: userSearchQuery || undefined,
-        limit: 50,
+        limit: 200,
       }),
-    enabled: showSuggestions,
+    enabled: showSuggestions || !!selectedRole || !!selectedState || !!userSearchQuery,
   });
 
   const { data: inventoryData, isLoading: inventoryLoading } = useQuery({
@@ -157,10 +178,8 @@ export default function AdminInventoryScreen() {
   const totalQuantity = allItems.reduce((sum: number, item: any) => sum + item.quantity, 0);
   const lowStockCount = allItems.filter((item: any) => item.isLowStock).length;
   const totalAmount = allItems.reduce((sum: number, item: any) => {
-    const caseQty = item.boxQty ?? 1;
-    const masterPack = item.masterPackQty ?? 1;
-    const noOfCases = Math.floor(item.quantity / caseQty);
-    const amount = noOfCases * ((item.superTotal ?? 0) * masterPack);
+    const forPerPc = item.perPcPrice && item.perPcPrice > 0 ? item.perPcPrice : (item.forPerPc && item.forPerPc > 0 ? item.forPerPc : 12);
+    const amount = ((item.superTotal ?? 0) / forPerPc) * (item.quantity ?? 0);
     return sum + amount;
   }, 0);
 
@@ -196,8 +215,59 @@ export default function AdminInventoryScreen() {
       </View>
 
       <ScrollView className="flex-1" showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        {/* KPI Role Summary Tiles */}
+        <View className="px-4 pt-4 flex-row gap-3">
+          {/* Super Stockist Tile */}
+          <TouchableOpacity
+            onPress={() => {
+              router.push('/all-superstockish');
+            }}
+            activeOpacity={0.7}
+            className="flex-1 p-3.5 rounded-2xl border flex-row items-center justify-between shadow-sm bg-white border-gray-200 active:bg-orange-50/50 active:border-orange-300"
+          >
+            <View className="flex-1 pr-2">
+              <Text className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                Super Stockist
+              </Text>
+              <Text className="text-xl font-extrabold text-gray-900 mt-0.5">
+                {roleCountsLoading ? '...' : superStockistCount.toLocaleString('en-IN')}
+              </Text>
+              <Text className="text-[10px] font-semibold text-orange-600 mt-0.5">
+                Tap to view all
+              </Text>
+            </View>
+            <View className="w-10 h-10 rounded-xl items-center justify-center bg-orange-50 border border-orange-100">
+              <Ionicons name="business-outline" size={20} color="#f97316" />
+            </View>
+          </TouchableOpacity>
+
+          {/* Distributor Tile */}
+          <TouchableOpacity
+            onPress={() => {
+              router.push('/all-distributor');
+            }}
+            activeOpacity={0.7}
+            className="flex-1 p-3.5 rounded-2xl border flex-row items-center justify-between shadow-sm bg-white border-gray-200 active:bg-orange-50/50 active:border-orange-300"
+          >
+            <View className="flex-1 pr-2">
+              <Text className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                Distributor
+              </Text>
+              <Text className="text-xl font-extrabold text-gray-900 mt-0.5">
+                {roleCountsLoading ? '...' : distributorCount.toLocaleString('en-IN')}
+              </Text>
+              <Text className="text-[10px] font-semibold text-orange-600 mt-0.5">
+                Tap to view all
+              </Text>
+            </View>
+            <View className="w-10 h-10 rounded-xl items-center justify-center bg-orange-50 border border-orange-100">
+              <Ionicons name="people-outline" size={20} color="#f97316" />
+            </View>
+          </TouchableOpacity>
+        </View>
+
         {/* Selection/Filters Panel Card */}
-        <View className="p-4 m-4 bg-white border border-gray-200 rounded-2xl shadow-sm gap-4">
+        <View className="p-4 m-4 bg-white border border-gray-200 rounded-2xl shadow-sm gap-4" style={{ zIndex: 100, elevation: 5 }}>
           {/* State Picker row */}
           <View className="gap-2">
             <Text className="text-xs font-bold text-slate-500 uppercase tracking-wider">State</Text>
@@ -207,6 +277,7 @@ export default function AdminInventoryScreen() {
                   setSelectedState('');
                   setUserSearchQuery('');
                   setSelectedUser(null);
+                  setShowSuggestions(false);
                 }}
                 className={`px-3 py-1.5 rounded-lg border ${
                   selectedState === '' ? 'bg-orange-50 border-orange-300' : 'bg-white border-gray-200'
@@ -225,6 +296,7 @@ export default function AdminInventoryScreen() {
                       setSelectedState(state);
                       setUserSearchQuery('');
                       setSelectedUser(null);
+                      setShowSuggestions(false);
                     }}
                     className={`px-3 py-1.5 rounded-lg border ${
                       isSelected ? 'bg-orange-50 border-orange-300' : 'bg-white border-gray-200'
@@ -248,6 +320,7 @@ export default function AdminInventoryScreen() {
                   setSelectedRole('');
                   setUserSearchQuery('');
                   setSelectedUser(null);
+                  setShowSuggestions(false);
                 }}
                 className={`px-3 py-1.5 rounded-lg border ${
                   selectedRole === '' ? 'bg-orange-50 border-orange-300' : 'bg-white border-gray-200'
@@ -270,6 +343,7 @@ export default function AdminInventoryScreen() {
                       setSelectedRole(r.role);
                       setUserSearchQuery('');
                       setSelectedUser(null);
+                      setShowSuggestions(false);
                     }}
                     className={`px-3 py-1.5 rounded-lg border ${
                       isSelected ? 'bg-orange-50 border-orange-300' : 'bg-white border-gray-200'
@@ -285,13 +359,17 @@ export default function AdminInventoryScreen() {
           </View>
 
           {/* User search box */}
-          <View className="gap-1.5 relative" style={{ zIndex: 100 }}>
+          <View className="gap-1.5 relative" style={{ zIndex: 1000, elevation: 10 }}>
             <Text className="text-xs font-bold text-slate-500 uppercase tracking-wider">Search User</Text>
-            <View className="flex-row items-center border border-gray-200 rounded-xl px-4 py-2.5 bg-white">
+            <TouchableOpacity
+              activeOpacity={0.9}
+              onPress={() => setShowSuggestions((prev) => !prev)}
+              className="flex-row items-center border border-gray-200 rounded-xl px-4 py-2.5 bg-white"
+            >
               <Ionicons name="search-outline" size={16} color="#9ca3af" className="mr-2" />
               <TextInput
                 value={userSearchQuery}
-                onFocus={() => setShowSuggestions(true)}
+                onPressIn={() => setShowSuggestions((prev) => !prev)}
                 onChangeText={(text) => {
                   setUserSearchQuery(text);
                   setShowSuggestions(true);
@@ -302,25 +380,40 @@ export default function AdminInventoryScreen() {
                 className="flex-grow text-xs text-gray-800 p-0"
               />
               {!!userSearchQuery && (
-                <TouchableOpacity onPress={() => { setUserSearchQuery(''); setShowSuggestions(false); }} className="p-0.5">
+                <TouchableOpacity
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    setUserSearchQuery('');
+                    setShowSuggestions(false);
+                  }}
+                  className="p-0.5 mr-1"
+                >
                   <Ionicons name="close-circle" size={14} color="#9ca3af" />
                 </TouchableOpacity>
               )}
-            </View>
+              <Ionicons
+                name={showSuggestions ? 'chevron-up' : 'chevron-down'}
+                size={16}
+                color="#9ca3af"
+              />
+            </TouchableOpacity>
 
             {/* Suggestions Dropdown overlay */}
             {showSuggestions && (
-              <View className="absolute top-[68px] left-0 right-0 bg-white border border-gray-200 rounded-xl shadow-lg max-h-56 overflow-hidden z-[200]">
+              <View
+                className="absolute top-[68px] left-0 right-0 bg-white border border-gray-200 rounded-xl shadow-lg max-h-56 overflow-hidden"
+                style={{ backgroundColor: '#ffffff', zIndex: 9999, elevation: 20, opacity: 1 }}
+              >
                 {usersLoading ? (
-                  <View className="p-4 items-center justify-center">
+                  <View className="p-4 items-center justify-center bg-white" style={{ backgroundColor: '#ffffff' }}>
                     <ActivityIndicator size="small" color="#f97316" />
                   </View>
                 ) : matchingUsers.length === 0 ? (
-                  <View className="p-4 items-center justify-center">
+                  <View className="p-4 items-center justify-center bg-white" style={{ backgroundColor: '#ffffff' }}>
                     <Text className="text-xs text-gray-400">No users found</Text>
                   </View>
                 ) : (
-                  <ScrollView nestedScrollEnabled={true} keyboardShouldPersistTaps="handled">
+                  <ScrollView nestedScrollEnabled={true} keyboardShouldPersistTaps="handled" className="bg-white" style={{ backgroundColor: '#ffffff' }}>
                     {matchingUsers.map((u: any) => (
                       <TouchableOpacity
                         key={u.entityId}
@@ -329,7 +422,8 @@ export default function AdminInventoryScreen() {
                           setUserSearchQuery('');
                           setShowSuggestions(false);
                         }}
-                        className="border-b border-gray-100 p-3 hover:bg-gray-50 active:bg-gray-50 flex-row justify-between items-center"
+                        className="border-b border-gray-100 p-3 bg-white active:bg-gray-50 flex-row justify-between items-center"
+                        style={{ backgroundColor: '#ffffff' }}
                       >
                         <View className="flex-1 pr-2">
                           <Text className="text-xs font-bold text-gray-800">{u.name}</Text>
@@ -472,7 +566,8 @@ export default function AdminInventoryScreen() {
                         const caseQty = item.boxQty ?? 1;
                         const masterPack = item.masterPackQty ?? 1;
                         const noOfCases = Math.floor(item.quantity / caseQty);
-                        const amount = noOfCases * ((item.superTotal ?? 0) * masterPack);
+                        const forPerPc = item.perPcPrice && item.perPcPrice > 0 ? item.perPcPrice : (item.forPerPc && item.forPerPc > 0 ? item.forPerPc : 12);
+                        const amount = ((item.superTotal ?? 0) / forPerPc) * (item.quantity ?? 0);
 
                         return (
                           <View key={item.skuId} className={`flex-row border-b border-gray-100 py-3 px-4 items-center ${item.isLowStock ? 'bg-amber-50/20' : ''}`}>

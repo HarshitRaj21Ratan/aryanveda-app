@@ -21,7 +21,8 @@ export interface CreateSecondaryOrderRequest {
 }
 
 export interface CreateSalesUserOrderRequest {
-  distributorId: string;
+  distributorId?: string;
+  superStockistId?: string;
   items: { skuId: string; quantity: number; unitMode?: 'dozen' | 'piece' | 'jar' | 'box' }[];
   idempotencyKey: string;
 }
@@ -216,10 +217,20 @@ export const orderService = {
     return res.data;
   },
 
+  getConnectedSuperStockists: async (): Promise<ApiResponse<{ superStockists: ConnectedDistributor[] }>> => {
+    const res = await apiClient.get<ApiResponse<{ superStockists: ConnectedDistributor[] }>>('/orders/sales-user/connected-super-stockists');
+    return res.data;
+  },
+
   createSalesUserOrder: async (
     data: CreateSalesUserOrderRequest
   ): Promise<ApiResponse<{ order: IOrder }>> => {
     const res = await apiClient.post<ApiResponse<{ order: IOrder }>>('/orders/sales-user', data);
     return res.data;
+  },
+
+  exportOrdersXlsx: async (params: OrderListParams = {}): Promise<void> => {
+    const { downloadOrdersXlsxReport } = require('@/lib/xlsx-export');
+    await downloadOrdersXlsxReport(params);
   },
 };

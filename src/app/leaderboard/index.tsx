@@ -20,6 +20,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '@/store/auth.store';
 import { UserRole } from '@/types';
 import { leaderboardService, type LeaderboardPeriod, type LeaderboardEntry } from '@/services/leaderboard.service';
+import { userService } from '@/services/user.service';
 import { STATE_OPTIONS } from '@/lib/states';
 
 const { width } = Dimensions.get('window');
@@ -58,6 +59,112 @@ function getBadgeColors(rank: number): { bg: string; text: string; border: strin
   return { bg: 'bg-gray-50', text: 'text-gray-500', border: 'border-gray-200' };
 }
 
+// Custom Date Picker Modal
+function CalendarModal({
+  visible,
+  onClose,
+  onSelectDate,
+  currentValue,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onSelectDate: (dateStr: string) => void;
+  currentValue: string;
+}) {
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+
+  const year = currentMonth.getFullYear();
+  const month = currentMonth.getMonth();
+
+  const months = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDayIndex = new Date(year, month, 1).getDay();
+
+  const days = [];
+  for (let i = 0; i < firstDayIndex; i++) {
+    days.push(null);
+  }
+  for (let i = 1; i <= daysInMonth; i++) {
+    days.push(i);
+  }
+
+  const handlePrevMonth = () => {
+    setCurrentMonth(new Date(year, month - 1, 1));
+  };
+
+  const handleNextMonth = () => {
+    setCurrentMonth(new Date(year, month + 1, 1));
+  };
+
+  const selectDay = (day: number) => {
+    const formattedMonth = String(month + 1).padStart(2, '0');
+    const formattedDay = String(day).padStart(2, '0');
+    onSelectDate(`${year}-${formattedMonth}-${formattedDay}`);
+    onClose();
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View className="flex-1 bg-black/50 justify-center items-center p-6">
+        <View className="bg-white w-full max-w-sm rounded-2xl overflow-hidden shadow-xl p-4">
+          <View className="flex-row justify-between items-center mb-4">
+            <TouchableOpacity onPress={handlePrevMonth} className="p-2">
+              <Ionicons name="chevron-back" size={20} color="#374151" />
+            </TouchableOpacity>
+            <Text className="font-bold text-gray-800 text-base">{months[month]} {year}</Text>
+            <TouchableOpacity onPress={handleNextMonth} className="p-2">
+              <Ionicons name="chevron-forward" size={20} color="#374151" />
+            </TouchableOpacity>
+          </View>
+
+          <View className="flex-row justify-between mb-2">
+            {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((day) => (
+              <View key={day} className="w-[14%] items-center">
+                <Text className="text-[11px] font-bold text-gray-400">{day}</Text>
+              </View>
+            ))}
+          </View>
+
+          <View className="flex-row flex-wrap justify-start">
+            {days.map((day, idx) => {
+              if (day === null) {
+                return <View key={idx} className="w-[14%] h-9" />;
+              }
+
+              const formattedMonth = String(month + 1).padStart(2, '0');
+              const formattedDay = String(day).padStart(2, '0');
+              const dateStr = `${year}-${formattedMonth}-${formattedDay}`;
+              const isSelected = currentValue === dateStr;
+
+              return (
+                <TouchableOpacity
+                  key={idx}
+                  onPress={() => selectDay(day)}
+                  className={`w-[14%] h-9 items-center justify-center rounded-full ${
+                    isSelected ? 'bg-orange-100' : 'active:bg-gray-100'
+                  }`}
+                >
+                  <Text className={`text-xs font-semibold ${isSelected ? 'text-[#f97316] font-bold' : 'text-gray-700'}`}>
+                    {day}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <TouchableOpacity onPress={onClose} className="mt-4 border-t border-gray-100 pt-3 items-center">
+            <Text className="text-xs font-bold text-gray-500">Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 export default function LeaderboardScreen() {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
@@ -66,24 +173,36 @@ export default function LeaderboardScreen() {
   const [period, setPeriod] = useState<LeaderboardPeriod>('monthly');
   const [stateFilter, setStateFilter] = useState('');
   const [beatFilter, setBeatFilter] = useState('');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
   // Modals
   const [showStateModal, setShowStateModal] = useState(false);
   const [showBeatModal, setShowBeatModal] = useState(false);
+  const [showFromCalendar, setShowFromCalendar] = useState(false);
+  const [showToCalendar, setShowToCalendar] = useState(false);
 
   const [isExporting, setIsExporting] = useState(false);
 
   const handleExport = async () => {
-    const entriesToExport = remainingEntries;
-    if (entriesToExport.length === 0) {
-      Alert.alert('No Data', 'There is no ranking data to export.');
-      return;
-    }
-
     setIsExporting(true);
     try {
+      const res = await leaderboardService.getLeaderboard({
+        period,
+        state: stateFilter || undefined,
+        beat: beatFilter || undefined,
+        fromDate: fromDate || undefined,
+        toDate: toDate || undefined,
+        limit: 10000,
+      });
+      const entriesToExport = res.entries ?? [];
+      if (entriesToExport.length === 0) {
+        Alert.alert('No Data', 'There is no ranking data to export.');
+        return;
+      }
+
       const rows = entriesToExport.map((entry) => ({
         Rank: entry.rank,
         'SO Name': entry.soName,
@@ -101,7 +220,7 @@ export default function LeaderboardScreen() {
 
       const { downloadXlsxReport } = require('@/lib/xlsx-export');
       await downloadXlsxReport(rows, {
-        fileName: `SO_Leaderboard_${new Date().toISOString().slice(0, 10)}.xlsx`,
+        fileName: `leaderboard-${period}-${fromDate || 'start'}-to-${toDate || 'now'}.xlsx`,
         sheetName: 'Leaderboard',
       });
     } catch (err: any) {
@@ -116,30 +235,58 @@ export default function LeaderboardScreen() {
   const isAllowed = !!user && ALLOWED_ROLES.has(user.role as UserRole);
 
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
-    queryKey: ['leaderboard-dashboard-app', period, stateFilter, beatFilter],
+    queryKey: ['leaderboard-dashboard-app', period, stateFilter, beatFilter, fromDate, toDate],
     queryFn: () =>
       leaderboardService.getLeaderboard({
         period,
         state: stateFilter || undefined,
         beat: beatFilter || undefined,
+        fromDate: fromDate || undefined,
+        toDate: toDate || undefined,
         limit: 50,
       }),
     enabled: isAllowed,
+    staleTime: 60_000,
+    placeholderData: (previousData) => previousData,
   });
 
-  const clearFilters = () => {
-    setStateFilter('');
-    setBeatFilter('');
+  const applyRange = (type: '7d' | '30d' | 'month') => {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const formatDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+    if (type === 'month') {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+      setFromDate(formatDate(start));
+      setToDate(formatDate(now));
+    } else {
+      const days = type === '7d' ? 7 : 30;
+      const start = new Date();
+      start.setDate(now.getDate() - days);
+      setFromDate(formatDate(start));
+      setToDate(formatDate(now));
+    }
   };
 
-  // Beat options from leaderboard entries
+  const clearFilters = () => {
+    setPeriod('monthly');
+    setStateFilter('');
+    setBeatFilter('');
+    setFromDate('');
+    setToDate('');
+  };
+
+  // Fetch unique beats for the selected state from API matching frontend
+  const { data: beatsData } = useQuery({
+    queryKey: ['beats-list-app', stateFilter],
+    queryFn: () => userService.listBeats({ state: stateFilter || undefined }),
+    enabled: isAllowed,
+    staleTime: 60_000,
+  });
+
   const beatOptions = useMemo(() => {
-    const beats = new Set<string>();
-    for (const entry of data?.entries ?? []) {
-      if (entry.beat) beats.add(entry.beat.toLowerCase());
-    }
-    return Array.from(beats).sort();
-  }, [data]);
+    return (beatsData ?? []).slice().sort((a, b) => a.localeCompare(b));
+  }, [beatsData]);
 
   const topThree = useMemo(() => {
     return data?.entries.slice(0, 3) ?? [];
@@ -188,6 +335,9 @@ export default function LeaderboardScreen() {
 
   // Helper to format period name
   const getPeriodLabel = () => {
+    if (fromDate && toDate) return `${fromDate} to ${toDate}`;
+    if (fromDate) return `From ${fromDate}`;
+    if (toDate) return `Until ${toDate}`;
     if (period === 'weekly') return 'This Week';
     if (period === 'monthly') return 'This Month';
     return 'All Time';
@@ -241,26 +391,62 @@ export default function LeaderboardScreen() {
 
         {/* Filters Panel Card */}
         <View className="mx-5 bg-white border border-gray-100 p-4 rounded-2xl shadow-sm gap-4 mb-4">
-          <View className="flex-row items-center gap-2">
-            <Ionicons name="funnel-outline" size={16} color="#f97316" />
-            <Text className="text-sm font-bold text-gray-800">Filters</Text>
+          <View className="flex-row items-center justify-between">
+            <View className="flex-row items-center gap-2">
+              <Ionicons name="funnel-outline" size={16} color="#f97316" />
+              <Text className="text-sm font-bold text-gray-800">Filters</Text>
+            </View>
+            <TouchableOpacity
+              onPress={clearFilters}
+              className="flex-row items-center border border-gray-200 bg-white px-3 py-1.5 rounded-xl active:bg-gray-50"
+            >
+              <Ionicons name="refresh-outline" size={13} color="#6b7280" className="mr-1" />
+              <Text className="text-xs font-semibold text-gray-600">Reset</Text>
+            </TouchableOpacity>
           </View>
 
-          {/* Period Buttons Row */}
+          {/* Preset Buttons Row */}
           <View className="flex-row flex-wrap gap-2">
+            <TouchableOpacity
+              onPress={() => applyRange('7d')}
+              className={`px-3 py-1.5 rounded-xl border ${
+                fromDate && toDate ? 'border-gray-200 bg-white' : 'border-gray-200 bg-white'
+              }`}
+            >
+              <Text className="text-xs font-semibold text-gray-600">Last 7 days</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => applyRange('30d')}
+              className="px-3 py-1.5 rounded-xl border border-gray-200 bg-white"
+            >
+              <Text className="text-xs font-semibold text-gray-600">Last 30 days</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => applyRange('month')}
+              className="px-3 py-1.5 rounded-xl border border-gray-200 bg-white"
+            >
+              <Text className="text-xs font-semibold text-gray-600">This Month (Range)</Text>
+            </TouchableOpacity>
+
             {[
               { value: 'weekly' as const, label: 'This Week' },
               { value: 'monthly' as const, label: 'This Month' },
               { value: 'all_time' as const, label: 'All Time' },
             ].map((opt) => {
-              const isSelected = period === opt.value;
+              const isSelected = period === opt.value && !fromDate && !toDate;
               return (
                 <TouchableOpacity
                   key={opt.value}
-                  onPress={() => setPeriod(opt.value)}
-                  className={`px-4 py-2 rounded-xl border ${
+                  onPress={() => {
+                    setPeriod(opt.value);
+                    setFromDate('');
+                    setToDate('');
+                  }}
+                  className={`px-3 py-1.5 rounded-xl border ${
                     isSelected
-                      ? 'border-[#f97316] bg-orange-50/10'
+                      ? 'border-[#f97316] bg-orange-50/20'
                       : 'border-gray-200 bg-white'
                   }`}
                 >
@@ -270,14 +456,50 @@ export default function LeaderboardScreen() {
                 </TouchableOpacity>
               );
             })}
+          </View>
 
-            <TouchableOpacity
-              onPress={clearFilters}
-              className="flex-row items-center border border-gray-200 bg-white px-4 py-2 rounded-xl active:bg-gray-50 ml-auto"
-            >
-              <Ionicons name="refresh-outline" size={14} color="#6b7280" className="mr-1" />
-              <Text className="text-xs font-semibold text-gray-600">Reset</Text>
-            </TouchableOpacity>
+          {/* From Date & To Date Inputs Row */}
+          <View className="flex-row gap-3">
+            <View className="flex-1">
+              <Text className="text-xs font-bold text-gray-400 mb-1 uppercase">From Date</Text>
+              <View className="flex-row items-center border border-gray-200 rounded-xl px-3 py-2 bg-white">
+                <TouchableOpacity onPress={() => setShowFromCalendar(true)} className="mr-2">
+                  <Ionicons name="calendar-outline" size={16} color="#f97316" />
+                </TouchableOpacity>
+                <TextInput
+                  value={fromDate}
+                  onChangeText={setFromDate}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor="#9ca3af"
+                  className="flex-1 text-xs text-gray-800 p-0 font-medium"
+                />
+                {!!fromDate && (
+                  <TouchableOpacity onPress={() => setFromDate('')}>
+                    <Ionicons name="close-circle" size={14} color="#9ca3af" />
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+            <View className="flex-1">
+              <Text className="text-xs font-bold text-gray-400 mb-1 uppercase">To Date</Text>
+              <View className="flex-row items-center border border-gray-200 rounded-xl px-3 py-2 bg-white">
+                <TouchableOpacity onPress={() => setShowToCalendar(true)} className="mr-2">
+                  <Ionicons name="calendar-outline" size={16} color="#f97316" />
+                </TouchableOpacity>
+                <TextInput
+                  value={toDate}
+                  onChangeText={setToDate}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor="#9ca3af"
+                  className="flex-1 text-xs text-gray-800 p-0 font-medium"
+                />
+                {!!toDate && (
+                  <TouchableOpacity onPress={() => setToDate('')}>
+                    <Ionicons name="close-circle" size={14} color="#9ca3af" />
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
           </View>
 
           {/* State Selector Dropdown */}
@@ -587,6 +809,22 @@ export default function LeaderboardScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* From Date Calendar Modal */}
+      <CalendarModal
+        visible={showFromCalendar}
+        onClose={() => setShowFromCalendar(false)}
+        onSelectDate={setFromDate}
+        currentValue={fromDate}
+      />
+
+      {/* To Date Calendar Modal */}
+      <CalendarModal
+        visible={showToCalendar}
+        onClose={() => setShowToCalendar(false)}
+        onSelectDate={setToDate}
+        currentValue={toDate}
+      />
     </View>
   );
 }

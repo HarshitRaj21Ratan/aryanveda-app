@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -60,6 +60,27 @@ export default function TerritoriesScreen() {
   const [showStateModal, setShowStateModal] = useState(false);
   const [showDateRoleModal, setShowDateRoleModal] = useState(false);
   const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(true);
+
+  const justToggledRef = useRef(false);
+  const lastToggleTimeRef = useRef(0);
+
+  const handleToggleSuggestions = () => {
+    const now = Date.now();
+    if (now - lastToggleTimeRef.current < 200) {
+      return;
+    }
+    lastToggleTimeRef.current = now;
+    justToggledRef.current = true;
+    setIsSuggestionsOpen((prev) => !prev);
+  };
+
+  const handleInputFocus = () => {
+    if (justToggledRef.current) {
+      justToggledRef.current = false;
+      return;
+    }
+    setIsSuggestionsOpen(true);
+  };
 
   const [isExporting, setIsExporting] = useState(false);
 
@@ -244,6 +265,8 @@ export default function TerritoriesScreen() {
       };
     },
     enabled: !!user,
+    staleTime: 30 * 1000,
+    placeholderData: (previousData) => previousData,
   });
 
   // Sheet data query
@@ -257,6 +280,8 @@ export default function TerritoriesScreen() {
         limit: sheetPageSize,
       }),
     enabled: !!(stateFilter || selectedEntityId),
+    staleTime: 30 * 1000,
+    placeholderData: (previousData) => previousData,
   });
 
   const suggestions = useMemo(() => {
@@ -324,7 +349,11 @@ export default function TerritoriesScreen() {
         <View className="px-6 pt-4 gap-3" style={{ zIndex: 50 }}>
           {/* Person name search */}
           <View className="relative z-10">
-            <View className="flex-row items-center border border-gray-200 rounded-xl px-4 py-3 bg-white">
+            <TouchableOpacity
+              activeOpacity={1}
+              onPress={handleToggleSuggestions}
+              className="flex-row items-center border border-gray-200 rounded-xl px-4 py-3 bg-white"
+            >
               <Ionicons name="search-outline" size={18} color="#94a3b8" className="mr-2.5" />
               <TextInput
                 value={nameInput}
@@ -334,23 +363,26 @@ export default function TerritoriesScreen() {
                   setSuggestionPage(1);
                   setIsSuggestionsOpen(true);
                 }}
-                onFocus={() => setIsSuggestionsOpen(true)}
-                onPressIn={() => setIsSuggestionsOpen((prev) => !prev)}
+                onFocus={handleInputFocus}
+                onPressIn={handleToggleSuggestions}
                 placeholder="Search person name"
                 placeholderTextColor="#94a3b8"
                 className="flex-1 text-sm text-slate-700 p-0"
               />
               {!!nameInput && (
-                <TouchableOpacity onPress={() => {
-                  setNameInput('');
-                  setSelectedEntityId('');
-                  setSuggestionPage(1);
-                  setIsSuggestionsOpen(false);
-                }}>
+                <TouchableOpacity
+                  onPress={(e) => {
+                    e?.stopPropagation?.();
+                    setNameInput('');
+                    setSelectedEntityId('');
+                    setSuggestionPage(1);
+                    setIsSuggestionsOpen(false);
+                  }}
+                >
                   <Ionicons name="close-circle" size={16} color="#94a3b8" />
                 </TouchableOpacity>
               )}
-            </View>
+            </TouchableOpacity>
 
             {/* Suggestions list */}
             {isSuggestionsOpen && suggestions.length > 0 && (
